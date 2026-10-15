@@ -13,6 +13,7 @@ stdenv.mkDerivation {
   src = ./.;
   nativeBuildInputs = [ cmake pkg-config ];
   buildInputs = [ fcitx5 ];
+  doCheck = true; # ctest: addon/test_shadow.cpp
   meta = {
     description = "fcitx5 addon: dictation with live preview, backed by whistle-ime-backend";
     license = lib.licenses.mit;

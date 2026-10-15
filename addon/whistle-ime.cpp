@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -49,6 +50,8 @@
 #include <fcitx/instance.h>
 #include <fcitx/text.h>
 #include <fcitx/userinterface.h>
+
+#include "shadow.h"
 
 extern char **environ;
 
@@ -76,9 +79,20 @@ public:
             EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
             [this](Event &event) { onKey(static_cast<KeyEvent &>(event)); });
 
+        cursorHandler_ = instance_->watchEvent(
+            EventType::InputContextCursorRectChanged, EventWatcherPhase::Default, [this](Event &event) {
+                auto *ic = static_cast<InputContextEvent &>(event).inputContext();
+                if (shadow_.tracks(ic->uuid())) {
+                    shadow_.cursorMoved(ic->cursorRect(), state_ != State::Idle, Shadow::Clock::now());
+                }
+            });
+
         focusHandler_ = instance_->watchEvent(
             EventType::InputContextFocusOut, EventWatcherPhase::Default, [this](Event &event) {
                 auto &focus = static_cast<FocusOutEvent &>(event);
+                if (shadow_.tracks(focus.inputContext()->uuid())) {
+                    shadow_.invalidate();
+                }
                 if (focus.inputContext()->uuid() == icUuid_ &&
                     (state_ == State::Recording || state_ == State::Finishing)) {
                     WHISTLE_INFO() << "focus left the field: cancelling";
@@ -113,6 +127,8 @@ private:
             if (trigger) {
                 start(event.inputContext());
                 event.filterAndAccept();
+            } else {
+                follow(event.inputContext(), key);  // the key goes on to the app
             }
             return;
         case State::Recording:
@@ -148,6 +164,11 @@ private:
             showStatus(ic, "Whistle is loading…");
             return;
         }
+        // Read the context before touching the shadow: an unusable shadow is restarted below.
+        const std::string before = context(ic);
+        if (!shadow_.usable(ic->uuid(), ic->cursorRect())) {
+            shadow_.reset(ic->uuid(), ic->cursorRect(), Shadow::Clock::now());
+        }
         icUuid_ = ic->uuid();
         held_.clear();
         errorShown_ = false;
@@ -158,7 +179,7 @@ private:
         }
         state_ = State::Recording;
         logContext(ic, "START");
-        send("START\t" + context(ic));
+        send("START\t" + before);
         showStatus(ic, "🎤 Dictating");
     }
 
@@ -168,31 +189,66 @@ private:
         showStatus(findIc(), "Finishing…");
     }
 
-    // START's context fields: "1<TAB><text before the cursor>" when the app reports it, else "0<TAB>". The
-    // backend decides spacing and casing from it. Only the last 200 characters are sent, escaped so they fit
-    // on one line.
-    static std::string context(InputContext *ic) {
+    // START's context fields: "1<TAB><text before the cursor>" if known, else "0<TAB>". The backend decides
+    // spacing and casing from it. In order: the app's report if it has text; else the shadow, if it still
+    // describes this field; else the app's empty report (the start of a field); else unknown.
+    std::string context(InputContext *ic) const {
         const auto &surrounding = ic->surroundingText();
-        if (!ic->capabilityFlags().test(CapabilityFlag::SurroundingText) || !surrounding.isValid()) {
+        const bool reported = ic->capabilityFlags().test(CapabilityFlag::SurroundingText) && surrounding.isValid();
+        if (reported && !surrounding.text().empty()) {
+            const std::string &text = surrounding.text();
+            const size_t length = utf8::lengthValidated(text);
+            const size_t cursor = surrounding.cursor();
+            if (length != utf8::INVALID_LENGTH && cursor <= length) {
+                return "1\t" + escape(std::string(utf8::nextNChar(text.begin(), cursor > 200 ? cursor - 200 : 0),
+                                                  utf8::nextNChar(text.begin(), cursor)));
+            }
             return "0\t";
         }
-        const std::string &text = surrounding.text();
-        const size_t length = utf8::lengthValidated(text);
-        const size_t cursor = surrounding.cursor();
-        if (length == utf8::INVALID_LENGTH || cursor > length) {
-            return "0\t";
+        if (shadow_.usable(ic->uuid(), ic->cursorRect()) && !shadow_.text().empty()) {
+            return "1\t" + escape(shadow_.text());
         }
-        const auto at = [&](size_t chars) { return utf8::nextNChar(text.begin(), chars); };
+        return reported ? "1\t" : "0\t";
+    }
+
+    // Backslash, tab and newline escaped, so the context fits in one field of one line.
+    static std::string escape(const std::string &text) {
         std::string escaped;
-        for (auto it = at(cursor > 200 ? cursor - 200 : 0), end = at(cursor); it != end; ++it) {
-            switch (*it) {
+        for (char c : text) {
+            switch (c) {
             case '\\': escaped += "\\\\"; break;
             case '\t': escaped += "\\t"; break;
             case '\n': escaped += "\\n"; break;
-            default: escaped += *it;
+            default: escaped += c;
             }
         }
-        return "1\t" + escaped;
+        return escaped;
+    }
+
+    // A key reaching the app while we are idle: printable text extends the shadow, Backspace shortens it,
+    // modifiers alone do nothing, and anything else (Enter, arrows, Home, Tab, Escape, chords) may move the
+    // cursor or end the line, so the shadow no longer knows where it is.
+    void follow(InputContext *ic, const Key &key) {
+        if (!ic || !shadow_.tracks(ic->uuid()) || key.isModifier()) {
+            return;
+        }
+        if (const auto text = typedText(key); !text.empty()) {
+            shadow_.append(text, Shadow::Clock::now());
+        } else if (key.check(FcitxKey_BackSpace)) {
+            shadow_.backspace(Shadow::Clock::now());
+        } else {
+            shadow_.invalidate();
+        }
+    }
+
+    // The text a key types, or "" if it types none (Ctrl/Alt/Super chords type none).
+    static std::string typedText(const Key &key) {
+        const uint32_t ch = Key::keySymToUnicode(key.sym());
+        if (ch < 0x20 || ch == 0x7f ||
+            key.states().testAny(KeyStates{KeyState::Ctrl, KeyState::Alt, KeyState::Super})) {
+            return "";
+        }
+        return Key::keySymToUTF8(key.sym());
     }
 
     // ---- backend messages --------------------------------------------------------------------------
@@ -222,9 +278,13 @@ private:
                 // Commit while the preedit is still up, then let the next PREEDIT replace it: the order
                 // clients handle reliably (a commit right after clearing the preedit can be swallowed).
                 ic->commitString(fields[1]);
+                if (shadow_.tracks(icUuid_)) {
+                    shadow_.append(fields[1], Shadow::Clock::now());
+                }
             }
         } else if (kind == "PREEDIT" && fields.size() == 3) {
             setPreedit(fields[1], fields[2]);
+            shadow_.touch(Shadow::Clock::now());
         } else if (kind == "DONE") {
             logContext(findIc(), "DONE");
             endSession(State::Idle);
@@ -266,8 +326,10 @@ private:
         held_.clear();
         state_ = next;
         if (next == State::Idle && ic) {
+            shadow_.touch(Shadow::Clock::now());  // the app is about to redraw after the final commit
             for (const auto &key : held) {
                 replay(ic, key);
+                follow(ic, key);
             }
         }
     }
@@ -275,11 +337,8 @@ private:
     // Typed text goes back as a commit, which every frontend delivers; other keys (Backspace, Return,
     // arrows) are forwarded to the app as key events.
     static void replay(InputContext *ic, const Key &key) {
-        const uint32_t ch = Key::keySymToUnicode(key.sym());
-        const bool printable = ch >= 0x20 && ch != 0x7f &&
-                               !key.states().testAny(KeyStates{KeyState::Ctrl, KeyState::Alt, KeyState::Super});
-        if (printable) {
-            ic->commitString(Key::keySymToUTF8(key.sym()));
+        if (const auto text = typedText(key); !text.empty()) {
+            ic->commitString(text);
         } else {
             ic->forwardKey(key);
         }
@@ -471,6 +530,7 @@ private:
     WhistleImeConfig config_;
     std::unique_ptr<HandlerTableEntry<EventHandler>> keyHandler_;
     std::unique_ptr<HandlerTableEntry<EventHandler>> focusHandler_;
+    std::unique_ptr<HandlerTableEntry<EventHandler>> cursorHandler_;
     std::unique_ptr<EventSourceIO> ioSource_;
     pid_t child_ = -1;
     int backendFd_ = -1;
@@ -481,6 +541,7 @@ private:
     CapabilityFlags savedCaps_{};
     std::vector<Key> held_;  // keys pressed after STOP, replayed in order after the final commit
     bool errorShown_ = false;
+    Shadow shadow_;
 };
 
 }  // namespace fcitx

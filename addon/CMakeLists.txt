@@ -14,4 +14,9 @@ target_link_libraries(whistle-ime PRIVATE PkgConfig::FCITX5CORE)
 target_compile_options(whistle-ime PRIVATE -Wall -Wextra)
 
 install(TARGETS whistle-ime DESTINATION "${CMAKE_INSTALL_LIBDIR}/fcitx5")
+
+enable_testing()
+add_executable(test_shadow test_shadow.cpp)
+target_link_libraries(test_shadow PRIVATE PkgConfig::FCITX5CORE)
+add_test(NAME shadow COMMAND test_shadow)
 install(FILES whistle-ime.conf DESTINATION "${CMAKE_INSTALL_DATADIR}/fcitx5/addon")
