@@ -3,7 +3,7 @@ import queue
 import numpy
 import pytest
 
-from needle.agent import live
+from whistle_ime import voting as live
 from whistle_ime import backend
 
 SPOKEN = [("And", 0.72), ("so,", 0.96), ("my", 1.28), ("fellow", 1.68), ("Americans,", 2.24), ("ask", 3.84),

@@ -10,8 +10,15 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in
     {
-      # The addon. The backend is a uv project (pyproject.toml); the addon's Backend option runs it.
-      packages.${system}.default = pkgs.callPackage ./addon/package.nix { };
+      # Builds with this flake's nixpkgs. On NixOS use the module instead: it builds against the system's
+      # nixpkgs, which the addon needs to match the running fcitx5.
+      packages.${system} = rec {
+        backend = pkgs.callPackage ./nix/backend.nix { };
+        addon = pkgs.callPackage ./addon/package.nix { };
+        default = addon;
+      };
+
+      nixosModules.default = ./nix/module.nix;
 
       devShells.${system}.default = pkgs.mkShell {
         packages = [

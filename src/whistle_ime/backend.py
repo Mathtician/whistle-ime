@@ -1,7 +1,7 @@
 """Dictation backend for the whistle-ime fcitx5 addon: speech in, preedit and commits out.
 
 The addon starts this process once and keeps it running, so the model stays loaded. During a session it
-transcribes the last 5 s every 0.1 s and votes across the windows (needle.agent.live). A word is committed
+transcribes the last 5 s every 0.1 s with Whistle and votes across the windows (voting.py). A word is committed
 the moment no future window can reach it, which is about 5.3 s after it was spoken; everything after that
 is shown as preedit and may still change.
 
@@ -34,9 +34,9 @@ import traceback
 
 import numpy
 
-from needle.agent import live
-
+from whistle_ime import voting
 from whistle_ime.context import fit_first_word, needs_space, unescape
+from whistle_ime.whistle import LANGUAGES, Whistle
 
 SAMPLE_RATE = 16000
 
@@ -58,8 +58,8 @@ class Session:
         self.emit = emit
         self.before = before
         self.keywords = keywords
-        self.recording = live.Recording(SAMPLE_RATE)
-        self.transcript = live.Transcript()
+        self.recording = voting.Recording(SAMPLE_RATE)
+        self.transcript = voting.Transcript()
         self.needs_space = before is not None and needs_space(before)  # the next text starts with a space
         self.committed = 0  # words of transcript.frozen already committed
         self.preedit = ("", "")
@@ -142,7 +142,7 @@ class PwRecorder:
 TICK = object()
 
 
-def run_session(hear, before, commands, emit, recorder, interval=live.INTERVAL_SECONDS, clock=time.monotonic,
+def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL_SECONDS, clock=time.monotonic,
                 keywords=()):
     """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF)."""
     session = Session(hear, before, emit, keywords)
@@ -179,7 +179,7 @@ def run_session(hear, before, commands, emit, recorder, interval=live.INTERVAL_S
     return keep_serving
 
 
-def serve(hear, commands, emit, record=PwRecorder, interval=live.INTERVAL_SECONDS, clock=time.monotonic,
+def serve(hear, commands, emit, record=PwRecorder, interval=voting.INTERVAL_SECONDS, clock=time.monotonic,
           keywords=()):
     """Answer sessions until commands end. commands yields lines without newlines, then None."""
     emit("READY")
@@ -208,10 +208,9 @@ def _stdin_lines(into):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--model", default="whistle", choices=live.MODELS)
-    parser.add_argument("--language", default=None)
+    parser.add_argument("--language", default=None, choices=LANGUAGES, help="Force the language (default: detect)")
     parser.add_argument("--keywords", default="", help="Words and phrases to favour, comma separated")
-    parser.add_argument("--interval", type=float, default=None, help="Seconds between passes")
+    parser.add_argument("--interval", type=float, default=voting.INTERVAL_SECONDS, help="Seconds between passes")
     args = parser.parse_args()
 
     # Only protocol messages may reach the addon: keep a private copy of stdout for them and send everything
@@ -224,10 +223,14 @@ def main():
         protocol.write("\t".join(_field(field) for field in fields) + "\n")
 
     keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
-    hear = live.load(args.model, args.language, keywords)
+    whistle = Whistle()
+
+    def hear(samples):
+        return whistle.words(samples, args.language, keywords)
+
     commands = queue.Queue()
     threading.Thread(target=_stdin_lines, args=(commands,), daemon=True).start()
-    serve(hear, commands, emit, interval=args.interval or live.INTERVALS[args.model], keywords=keywords)
+    serve(hear, commands, emit, interval=args.interval, keywords=keywords)
 
 
 if __name__ == "__main__":
