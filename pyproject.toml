@@ -1,0 +1,22 @@
+[project]
+name = "whistle-ime"
+version = "0.1.0"
+description = "Dictation with live preview into any Wayland text field, via an fcitx5 addon and Whistle"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "cactus-needle",
+    "numpy",
+]
+
+[project.scripts]
+whistle-ime-backend = "whistle_ime.backend:main"
+
+[tool.uv.sources]
+cactus-needle = { path = "../needle", editable = true }
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
