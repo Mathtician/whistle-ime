@@ -48,8 +48,11 @@ services.pipewire.wireplumber.extraConfig."51-mic-no-suspend"."monitor.alsa.rule
 - **Typing while dictating** stops dictation; the key lands after the dictated text.
 - **Focus leaving the field** discards whatever is still provisional; committed text stays.
 - Text becomes final about 5 s after you say it; until then it is preedit and may change.
-- The first word is fitted to the text before the cursor, when the app reports it: capitalized at the start
-  of a field or sentence, lowercased mid-sentence, with a space added where needed.
+- The first word is fitted to the text before the cursor: capitalized at the start of a field or sentence,
+  lowercased mid-sentence, with a space added where needed. Apps that don't report that text (terminals;
+  Konsole stopped on purpose in [konsole!800](https://invent.kde.org/utilities/konsole/-/merge_requests/800))
+  get a reconstruction from what was dictated and typed there since, valid until focus leaves, a key moves
+  the cursor (Enter, arrows, Home, Tab, chords) or the cursor moves by itself (a click).
 
 ## How it works
 
