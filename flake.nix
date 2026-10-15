@@ -15,6 +15,7 @@
       packages.${system} = rec {
         backend = pkgs.callPackage ./nix/backend.nix { };
         addon = pkgs.callPackage ./addon/package.nix { };
+        cli = pkgs.callPackage ./nix/cli.nix { };
         default = addon;
       };
 

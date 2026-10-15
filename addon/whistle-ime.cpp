@@ -2,14 +2,15 @@
  * whistle-ime: dictation into the focused text field, with a live preview.
  *
  * The addon is thin. It keeps one backend process running (the speech model stays loaded), turns the
- * trigger key into START/STOP, shows the backend's PREEDIT as inline preedit and inserts its COMMITs.
+ * D-Bus method Toggle (`whistle-ime toggle`, bound to a desktop shortcut) into START/STOP, shows the
+ * backend's PREEDIT as inline preedit and inserts its COMMITs.
  * The backend owns every decision about text, including spacing; see src/whistle_ime/backend.py for the
  * protocol. Structure and several hard-won details follow fcitx5-voiceinput (MIT,
  * github.com/GavinLiuOnline/fcitx5-voiceinput).
  *
  * Session states:
- *   Idle -> Recording        trigger key
- *   Recording -> Finishing   trigger key or Escape (STOP); any other key also STOPs, and is replayed after
+ *   Idle -> Recording        Toggle, into the focused text field
+ *   Recording -> Finishing   Toggle or Escape (STOP); any other key also STOPs, and is replayed after
  *                            the final commit so it lands after the dictated text
  *   Recording/Finishing -> Cancelling
  *                            focus left the field (CANCEL); its preedit is gone and it can no longer
@@ -50,6 +51,9 @@
 #include <fcitx/instance.h>
 #include <fcitx/text.h>
 #include <fcitx/userinterface.h>
+#include <fcitx-module/dbus/dbus_public.h>
+#include <fcitx-utils/dbus/bus.h>
+#include <fcitx-utils/dbus/objectvtable.h>
 
 #include "shadow.h"
 
@@ -62,18 +66,38 @@ FCITX_DEFINE_LOG_CATEGORY(whistle_ime, "whistle-ime");
 
 FCITX_CONFIGURATION(
     WhistleImeConfig,
-    // Super keeps the chord clear of app shortcuts; Super+V alone is Plasma's clipboard popup.
-    KeyListOption triggerKey{this, "TriggerKey", "Trigger Key", {Key("Super+Alt+V")}, KeyListConstrain()};
     // Run with /bin/sh -c; it must speak the protocol on stdin/stdout.
     Option<std::string> backend{this, "Backend", "Backend Command", ""};
     // Logs what the app reports about the field (including the text around the cursor) at START and DONE.
     Option<bool> logContext{this, "LogContext", "Log Field Context", false};);
 
+class WhistleIme;
+
+// org.fcitx.Fcitx.WhistleIme1 at /whistle_ime on fcitx5's bus: what `whistle-ime toggle` calls. The
+// shortcut lives in the desktop's settings, where the user sees it next to their others.
+class WhistleImeDBus : public dbus::ObjectVTable<WhistleImeDBus> {
+public:
+    explicit WhistleImeDBus(WhistleIme *parent) : parent_(parent) {}
+    std::string toggle();
+
+private:
+    WhistleIme *parent_;
+    FCITX_OBJECT_VTABLE_METHOD(toggle, "Toggle", "", "s");
+};
+
 class WhistleIme final : public AddonInstance {
+    // Defines dbus(); it must come before its first use, since its return type is deduced.
+    FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
+
 public:
     explicit WhistleIme(Instance *instance) : instance_(instance) {
         readAsIni(config_, "conf/whistle-ime.conf");
         spawnBackend();
+        if (auto *bus = dbus() ? dbus()->call<IDBusModule::bus>() : nullptr) {
+            bus->addObjectVTable("/whistle_ime", "org.fcitx.Fcitx.WhistleIme1", dbusObject_);
+        } else {
+            WHISTLE_INFO() << "no D-Bus: whistle-ime toggle will not reach this addon";
+        }
 
         keyHandler_ = instance_->watchEvent(
             EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
@@ -111,6 +135,27 @@ public:
         safeSaveAsIni(config_, "conf/whistle-ime.conf");
     }
 
+    // Start dictating into the focused text field, or stop. Returns what happened, for the caller to print.
+    std::string toggle() {
+        switch (state_) {
+        case State::Idle: {
+            auto *ic = instance_->inputContextManager().lastFocusedInputContext();
+            if (!ic || !ic->hasFocus()) {
+                return "no text field has focus";
+            }
+            return start(ic);
+        }
+        case State::Recording:
+            stop();
+            return "stopping";
+        case State::Finishing:
+            return "already stopping";
+        case State::Cancelling:
+            return "busy cancelling; try again";
+        }
+        return "";
+    }
+
 private:
     enum class State { Idle, Recording, Finishing, Cancelling };
 
@@ -121,18 +166,12 @@ private:
             return;
         }
         const Key &key = event.key();
-        const bool trigger = key.checkKeyList(config_.triggerKey.value());
         switch (state_) {
         case State::Idle:
-            if (trigger) {
-                start(event.inputContext());
-                event.filterAndAccept();
-            } else {
-                follow(event.inputContext(), key);  // the key goes on to the app
-            }
+            follow(event.inputContext(), key);  // the key goes on to the app
             return;
         case State::Recording:
-            if (trigger || key.check(FcitxKey_Escape)) {
+            if (key.check(FcitxKey_Escape)) {
                 stop();
                 event.filterAndAccept();
             } else if (!key.isModifier()) {
@@ -143,26 +182,23 @@ private:
             }
             return;
         case State::Finishing:
-            if (!key.isModifier() && !trigger && !key.check(FcitxKey_Escape)) {
+            if (!key.isModifier() && !key.check(FcitxKey_Escape)) {
                 held_.push_back(key);
             }
             event.filterAndAccept();
             return;
         case State::Cancelling:
-            if (trigger) {
-                event.filterAndAccept();  // too soon to start again; don't leak the chord to the app
-            }
-            return;  // other keys belong to wherever focus went
+            return;  // the field already lost focus; this key belongs to wherever focus went
         }
     }
 
-    void start(InputContext *ic) {
+    std::string start(InputContext *ic) {
         if (backendFd_ < 0) {
             spawnBackend();  // it died earlier; this press brings it back but cannot use it yet
         }
         if (!ready_) {
             showStatus(ic, "Whistle is loading…");
-            return;
+            return "still loading";
         }
         // Read the context before touching the shadow: an unusable shadow is restarted below.
         const std::string before = context(ic);
@@ -181,6 +217,7 @@ private:
         logContext(ic, "START");
         send("START\t" + before);
         showStatus(ic, "🎤 Dictating");
+        return "started";
     }
 
     void stop() {
@@ -542,7 +579,10 @@ private:
     std::vector<Key> held_;  // keys pressed after STOP, replayed in order after the final commit
     bool errorShown_ = false;
     Shadow shadow_;
+    WhistleImeDBus dbusObject_{this};
 };
+
+std::string WhistleImeDBus::toggle() { return parent_->toggle(); }
 
 }  // namespace fcitx
 

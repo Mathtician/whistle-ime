@@ -1,5 +1,6 @@
-# services.whistle-ime: the fcitx5 addon and its backend, configured. Both are built with the system's
-# nixpkgs, so the addon matches the running fcitx5.
+# services.whistle-ime: the fcitx5 addon, its backend and the `whistle-ime` command, configured. All are
+# built with the system's nixpkgs, so the addon matches the running fcitx5. Dictation starts and stops with
+# `whistle-ime`; bind it to a shortcut in the desktop's settings.
 {
   config,
   lib,
@@ -10,6 +11,7 @@ let
   cfg = config.services.whistle-ime;
   backend = pkgs.callPackage ./backend.nix { };
   addon = pkgs.callPackage ../addon/package.nix { };
+  cli = pkgs.callPackage ./cli.nix { };
   command = lib.escapeShellArgs (
     [ (lib.getExe backend) ]
     ++ lib.optionals (cfg.language != null) [ "--language" cfg.language ]
@@ -29,11 +31,6 @@ in
       default = [ ];
       example = [ "Siobhan" "Krzysztof Nowak" ];
       description = "Words and phrases to favour; they also keep their capital at the start of a dictation.";
-    };
-    triggerKey = lib.mkOption {
-      type = lib.types.str;
-      default = "Super+Alt+V";
-      description = "fcitx5 key that starts and stops dictation. KDE global shortcuts take precedence over it.";
     };
   };
 
@@ -55,10 +52,8 @@ in
       # System Settings > Keyboard > Virtual Keyboard so KWin launches it.
       fcitx5.waylandFrontend = lib.mkDefault true;
       fcitx5.addons = [ addon ];
-      fcitx5.settings.addons.whistle-ime = {
-        globalSection.Backend = "exec ${command}";
-        sections.TriggerKey."0" = cfg.triggerKey;
-      };
+      fcitx5.settings.addons.whistle-ime.globalSection.Backend = "exec ${command}";
     };
+    environment.systemPackages = [ cli ];
   };
 }

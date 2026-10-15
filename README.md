@@ -1,7 +1,8 @@
 # whistle-ime
 
-Dictation into any Wayland text field, with a live preview. Press **Super+Alt+V**, speak, and your words
-appear at the cursor as provisional (underlined) text that firms up as you talk; press it again to finish.
+Dictation into any Wayland text field, with a live preview. Press your dictation shortcut, speak, and your
+words appear at the cursor as provisional (underlined) text that firms up as you talk; press it again to
+finish.
 Speech recognition is [Whistle](https://huggingface.co/Cactus-Compute/whistle), a 17 MB model running
 locally on the CPU.
 
@@ -23,9 +24,16 @@ services.whistle-ime = {
   enable = true;
   language = "en";            # en de fr es it nl pl, or null to detect
   keywords = [ "Siobhan" ];   # favoured words; they also keep their capital
-  triggerKey = "Super+Alt+V";
 };
 ```
+
+Then bind the command `whistle-ime` to a shortcut of your choosing, next to your others:
+
+- **KDE**: System Settings > Keyboard > Shortcuts > Add New > Command or Script, command `whistle-ime`.
+- **Sway**: `bindsym $mod+Alt+v exec whistle-ime` (Hyprland, river etc. alike).
+
+`whistle-ime` asks the addon over fcitx5's D-Bus connection to start dictating into the focused text field,
+or to stop; it prints what happened (`started`, `stopping`, `no text field has focus`, ...).
 
 The module enables fcitx5 with its Wayland frontend. On KDE, select **Fcitx 5** under System Settings >
 Keyboard > Virtual Keyboard so KWin launches it, and make sure nothing else autostarts fcitx5 (the fcitx5
@@ -44,7 +52,7 @@ services.pipewire.wireplumber.extraConfig."51-mic-no-suspend"."monitor.alsa.rule
 
 ## Using it
 
-- **Trigger key**: start; again (or Escape): stop. A final pass commits the rest.
+- **Your shortcut** (`whistle-ime`): start; again (or Escape): stop. A final pass commits the rest.
 - **Typing while dictating** stops dictation; the key lands after the dictated text.
 - **Focus leaving the field** discards whatever is still provisional; committed text stays.
 - Text becomes final about 5 s after you say it; until then it is preedit and may change.
@@ -57,7 +65,8 @@ services.pipewire.wireplumber.extraConfig."51-mic-no-suspend"."monitor.alsa.rule
 ## How it works
 
 The addon (`addon/`, C++) is thin: it keeps one backend process running so the model stays loaded, maps the
-trigger key to `START`/`STOP`, and applies what the backend sends.
+D-Bus method `Toggle` (`org.fcitx.Fcitx.WhistleIme1` at `/whistle_ime`, called by the `whistle-ime`
+command) to `START`/`STOP`, and applies what the backend sends.
 
 The backend (`src/whistle_ime/`, Python) records with `pw-record` and, every 0.1 s, transcribes the last 5 s
 again. Every word is heard by dozens of overlapping windows, and the windows vote: each window's words are
