@@ -61,7 +61,9 @@ FCITX_CONFIGURATION(
     WhistleImeConfig,
     KeyListOption triggerKey{this, "TriggerKey", "Trigger Key", {Key("Control+Alt+V")}, KeyListConstrain()};
     // Run with /bin/sh -c; it must speak the protocol on stdin/stdout.
-    Option<std::string> backend{this, "Backend", "Backend Command", ""};);
+    Option<std::string> backend{this, "Backend", "Backend Command", ""};
+    // Logs what the app reports about the field (including the text around the cursor) at START and DONE.
+    Option<bool> logContext{this, "LogContext", "Log Field Context", false};);
 
 class WhistleIme final : public AddonInstance {
 public:
@@ -154,6 +156,7 @@ private:
             ic->setCapabilityFlags(savedCaps_ | CapabilityFlag::Preedit);
         }
         state_ = State::Recording;
+        logContext(ic, "START");
         send(std::string("START\t") + (needsSpace(ic) ? "1" : "0"));
         showStatus(ic, "🎤 Dictating");
     }
@@ -214,6 +217,7 @@ private:
         } else if (kind == "PREEDIT" && fields.size() == 3) {
             setPreedit(fields[1], fields[2]);
         } else if (kind == "DONE") {
+            logContext(findIc(), "DONE");
             endSession(State::Idle);
         } else {
             WHISTLE_INFO() << "unexpected backend line: " << line;
@@ -374,6 +378,72 @@ private:
             ::kill(child, SIGTERM);
             ::waitpid(child, nullptr, 0);
         }
+    }
+
+    // ---- context logging ---------------------------------------------------------------------------
+
+    void logContext(InputContext *ic, const char *when) const {
+        if (!config_.logContext.value() || !ic) {
+            return;
+        }
+        static const std::pair<CapabilityFlag, const char *> names[] = {
+            {CapabilityFlag::Preedit, "Preedit"},
+            {CapabilityFlag::FormattedPreedit, "FormattedPreedit"},
+            {CapabilityFlag::ClientUnfocusCommit, "ClientUnfocusCommit"},
+            {CapabilityFlag::SurroundingText, "SurroundingText"},
+            {CapabilityFlag::Password, "Password"},
+            {CapabilityFlag::Sensitive, "Sensitive"},
+            {CapabilityFlag::Email, "Email"},
+            {CapabilityFlag::Url, "Url"},
+            {CapabilityFlag::Terminal, "Terminal"},
+            {CapabilityFlag::Multiline, "Multiline"},
+            {CapabilityFlag::Name, "Name"},
+            {CapabilityFlag::Number, "Number"},
+            {CapabilityFlag::Digit, "Digit"},
+            {CapabilityFlag::Dialable, "Dialable"},
+            {CapabilityFlag::Alpha, "Alpha"},
+            {CapabilityFlag::Date, "Date"},
+            {CapabilityFlag::Time, "Time"},
+            {CapabilityFlag::Lowercase, "Lowercase"},
+            {CapabilityFlag::Uppercase, "Uppercase"},
+            {CapabilityFlag::UppercaseWords, "UppercaseWords"},
+            {CapabilityFlag::UppwercaseSentences, "UppercaseSentences"},
+            {CapabilityFlag::NoAutoUpperCase, "NoAutoUpperCase"},
+            {CapabilityFlag::SpellCheck, "SpellCheck"},
+            {CapabilityFlag::NoSpellCheck, "NoSpellCheck"},
+            {CapabilityFlag::WordCompletion, "WordCompletion"},
+            {CapabilityFlag::CommitStringWithCursor, "CommitStringWithCursor"},
+        };
+        std::string caps;
+        for (const auto &[flag, name] : names) {
+            if (ic->capabilityFlags().test(flag)) {
+                caps += caps.empty() ? name : std::string(",") + name;
+            }
+        }
+        std::string around = "(none)";
+        const auto &surrounding = ic->surroundingText();
+        if (surrounding.isValid()) {
+            const std::string &text = surrounding.text();
+            const size_t length = utf8::lengthValidated(text);
+            const size_t cursor = surrounding.cursor();
+            if (length == utf8::INVALID_LENGTH || cursor > length) {
+                around = "(invalid: cursor " + std::to_string(cursor) + " of " + std::to_string(length) + ")";
+            } else {
+                // Up to 60 characters either side of the cursor, which is marked by ⸢|⸥.
+                const size_t from = cursor > 60 ? cursor - 60 : 0;
+                const size_t to = std::min(length, cursor + 60);
+                auto at = [&](size_t chars) { return utf8::nextNChar(text.begin(), chars); };
+                std::string excerpt = std::string(at(from), at(cursor)) + "⸢|⸥" + std::string(at(cursor), at(to));
+                std::string escaped;
+                for (char c : excerpt) {
+                    escaped += c == '\n' ? std::string("\\n") : c == '\t' ? std::string("\\t") : std::string(1, c);
+                }
+                around = "cursor " + std::to_string(cursor) + "/" + std::to_string(length) + " anchor " +
+                         std::to_string(surrounding.anchor()) + " \"" + escaped + "\"";
+            }
+        }
+        WHISTLE_INFO() << "context " << when << ": program=" << ic->program() << " frontend=" << ic->frontend()
+                       << " caps=" << (caps.empty() ? "-" : caps) << " surrounding=" << around;
     }
 
     // ---- helpers -----------------------------------------------------------------------------------
