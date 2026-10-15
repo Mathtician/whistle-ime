@@ -59,7 +59,8 @@ FCITX_DEFINE_LOG_CATEGORY(whistle_ime, "whistle-ime");
 
 FCITX_CONFIGURATION(
     WhistleImeConfig,
-    KeyListOption triggerKey{this, "TriggerKey", "Trigger Key", {Key("Control+Alt+V")}, KeyListConstrain()};
+    // Super keeps the chord clear of app shortcuts; Super+V alone is Plasma's clipboard popup.
+    KeyListOption triggerKey{this, "TriggerKey", "Trigger Key", {Key("Super+Alt+V")}, KeyListConstrain()};
     // Run with /bin/sh -c; it must speak the protocol on stdin/stdout.
     Option<std::string> backend{this, "Backend", "Backend Command", ""};
     // Logs what the app reports about the field (including the text around the cursor) at START and DONE.
