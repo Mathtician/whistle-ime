@@ -157,7 +157,7 @@ private:
         }
         state_ = State::Recording;
         logContext(ic, "START");
-        send(std::string("START\t") + (needsSpace(ic) ? "1" : "0"));
+        send("START\t" + context(ic));
         showStatus(ic, "🎤 Dictating");
     }
 
@@ -167,23 +167,31 @@ private:
         showStatus(findIc(), "Finishing…");
     }
 
-    // Whether the character before the cursor needs a space between it and dictated text. Unknown (the
-    // app does not report surrounding text) counts as no.
-    static bool needsSpace(InputContext *ic) {
-        if (!ic->capabilityFlags().test(CapabilityFlag::SurroundingText)) {
-            return false;
-        }
+    // START's context fields: "1<TAB><text before the cursor>" when the app reports it, else "0<TAB>". The
+    // backend decides spacing and casing from it. Only the last 200 characters are sent, escaped so they fit
+    // on one line.
+    static std::string context(InputContext *ic) {
         const auto &surrounding = ic->surroundingText();
-        if (!surrounding.isValid() || surrounding.cursor() == 0) {
-            return false;
+        if (!ic->capabilityFlags().test(CapabilityFlag::SurroundingText) || !surrounding.isValid()) {
+            return "0\t";
         }
         const std::string &text = surrounding.text();
-        const auto bytes = utf8::ncharByteLength(text.begin(), surrounding.cursor());
-        if (bytes <= 0) {
-            return false;
+        const size_t length = utf8::lengthValidated(text);
+        const size_t cursor = surrounding.cursor();
+        if (length == utf8::INVALID_LENGTH || cursor > length) {
+            return "0\t";
         }
-        const uint32_t before = utf8::getLastChar(text.substr(0, static_cast<size_t>(bytes)));
-        return before != utf8::INVALID_CHAR && before != ' ' && before != '\n' && before != '\t';
+        const auto at = [&](size_t chars) { return utf8::nextNChar(text.begin(), chars); };
+        std::string escaped;
+        for (auto it = at(cursor > 200 ? cursor - 200 : 0), end = at(cursor); it != end; ++it) {
+            switch (*it) {
+            case '\\': escaped += "\\\\"; break;
+            case '\t': escaped += "\\t"; break;
+            case '\n': escaped += "\\n"; break;
+            default: escaped += *it;
+            }
+        }
+        return "1\t" + escaped;
     }
 
     // ---- backend messages --------------------------------------------------------------------------

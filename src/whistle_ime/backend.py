@@ -7,7 +7,9 @@ is shown as preedit and may still change.
 
 Protocol, one message per line, fields separated by tabs (text never contains tabs or newlines):
   addon -> backend
-    START <space>   begin a session; <space> is 1 if the text before the cursor needs a separating space
+    START <known> <before>
+                    begin a session; <known> is 1 if the app reports the text before the cursor, which is then
+                    <before> (its last 200 characters, with backslash, tab and newline escaped as \\, \t, \n)
     STOP            end the session: one last pass trusting the recording's true end, commit the rest, DONE
     CANCEL          end the session, dropping whatever is not committed yet, DONE
   backend -> addon
@@ -34,6 +36,8 @@ import numpy
 
 from needle.agent import live
 
+from whistle_ime.context import fit_first_word, needs_space, unescape
+
 SAMPLE_RATE = 16000
 
 
@@ -43,14 +47,20 @@ def _field(text):
 
 
 class Session:
-    """One dictation: audio in, COMMIT/PREEDIT messages out. No threads or audio devices; see run_session."""
+    """One dictation: audio in, COMMIT/PREEDIT messages out. No threads or audio devices; see run_session.
 
-    def __init__(self, hear, needs_space, emit):
+    before is the text before the cursor, or None when the app does not report it. It decides the leading
+    space and the first word's casing (see context.py).
+    """
+
+    def __init__(self, hear, before, emit, keywords=()):
         self.hear = hear
         self.emit = emit
+        self.before = before
+        self.keywords = keywords
         self.recording = live.Recording(SAMPLE_RATE)
         self.transcript = live.Transcript()
-        self.needs_space = needs_space  # whether the next text shown or committed starts with a space
+        self.needs_space = before is not None and needs_space(before)  # the next text starts with a space
         self.committed = 0  # words of transcript.frozen already committed
         self.preedit = ("", "")
         self.unheard = False  # audio arrived since the last pass
@@ -69,13 +79,18 @@ class Session:
 
     def publish(self):
         # Transcript.frozen only ever grows at its end, so committing its new tail never revises earlier text.
-        frozen = self.transcript.frozen
-        new = [text for text, _ in frozen[self.committed:]]
+        # The first word is fitted to the text before the cursor; that depends only on its own text, so the
+        # preview shows exactly what will be committed.
+        frozen = len(self.transcript.frozen)
+        words = self.transcript.words()
+        if words:
+            words[0] = (fit_first_word(words[0][0], self.before, self.keywords), words[0][1])
+        new = [text for text, _ in words[self.committed:frozen]]
         if new:
             self.emit("COMMIT", self._spaced(" ".join(new)))
-            self.committed = len(frozen)
+            self.committed = frozen
             self.needs_space = True
-        rest = self.transcript.words()[len(frozen):]
+        rest = words[frozen:]
         settled = [text for text, _ in itertools.takewhile(lambda word: word[1], rest)]
         tentative = [text for text, _ in rest[len(settled):]]
         preedit = (" ".join(settled), " ".join(tentative))
@@ -127,9 +142,10 @@ class PwRecorder:
 TICK = object()
 
 
-def run_session(hear, needs_space, commands, emit, recorder, interval=live.INTERVAL_SECONDS, clock=time.monotonic):
+def run_session(hear, before, commands, emit, recorder, interval=live.INTERVAL_SECONDS, clock=time.monotonic,
+                keywords=()):
     """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF)."""
-    session = Session(hear, needs_space, emit)
+    session = Session(hear, before, emit, keywords)
     next_tick = clock() + interval
     keep_serving = True
     try:
@@ -163,20 +179,22 @@ def run_session(hear, needs_space, commands, emit, recorder, interval=live.INTER
     return keep_serving
 
 
-def serve(hear, commands, emit, record=PwRecorder, interval=live.INTERVAL_SECONDS, clock=time.monotonic):
+def serve(hear, commands, emit, record=PwRecorder, interval=live.INTERVAL_SECONDS, clock=time.monotonic,
+          keywords=()):
     """Answer sessions until commands end. commands yields lines without newlines, then None."""
     emit("READY")
     while (command := commands.get()) is not None:
-        kind, _, argument = command.partition("\t")
+        kind, *fields = command.split("\t")
         if kind == "START":
-            assert argument in ("0", "1"), command
+            assert len(fields) == 2 and fields[0] in ("0", "1"), command
+            before = unescape(fields[1]) if fields[0] == "1" else None
             try:
                 recorder = record()
             except OSError as error:
                 emit("ERROR", f"cannot record: {error}")
                 emit("DONE")
                 continue
-            if not run_session(hear, argument == "1", commands, emit, recorder, interval, clock):
+            if not run_session(hear, before, commands, emit, recorder, interval, clock, keywords):
                 return
         elif kind not in ("STOP", "CANCEL"):
             emit("ERROR", f"unexpected {command!r} outside a session")
@@ -209,7 +227,7 @@ def main():
     hear = live.load(args.model, args.language, keywords)
     commands = queue.Queue()
     threading.Thread(target=_stdin_lines, args=(commands,), daemon=True).start()
-    serve(hear, commands, emit, interval=args.interval or live.INTERVALS[args.model])
+    serve(hear, commands, emit, interval=args.interval or live.INTERVALS[args.model], keywords=keywords)
 
 
 if __name__ == "__main__":

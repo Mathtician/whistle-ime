@@ -70,10 +70,10 @@ class Out:
         return [m[0] for m in self.messages]
 
 
-def run(seconds, *commands, needs_space=False):
+def run(seconds, *commands, before=None, keywords=()):
     out = Out()
-    keep = backend.run_session(fake_model, needs_space, Script(int(round(seconds / live.INTERVAL_SECONDS)), *commands),
-                               out, FakeRecorder(seconds), clock=lambda: 0.0)
+    keep = backend.run_session(fake_model, before, Script(int(round(seconds / live.INTERVAL_SECONDS)), *commands),
+                               out, FakeRecorder(seconds), clock=lambda: 0.0, keywords=keywords)
     return out, keep
 
 
@@ -100,7 +100,7 @@ def test_committed_text_plus_preedit_always_reads_as_the_current_transcript():
         if fields[0] == "PREEDIT":
             shown.append("".join(out.commits()) + fields[1] + (" " if fields[1] and fields[2] else "") + fields[2])
 
-    backend.run_session(fake_model, False, Script(80, "STOP"), watch, FakeRecorder(8.0), clock=lambda: 0.0)
+    backend.run_session(fake_model, None, Script(80, "STOP"), watch, FakeRecorder(8.0), clock=lambda: 0.0)
     assert shown[-1] == FULL  # once everything is committed the preedit is empty
     assert "calling" in " ".join(shown)  # the garbled right edge was previewed...
     assert "calling" not in "".join(out.commits())  # ...but never committed
@@ -115,7 +115,7 @@ def test_cancel_drops_what_is_not_committed():
 
 
 def test_a_needed_space_goes_before_the_first_text_and_only_there():
-    out, _ = run(8.0, "STOP", needs_space=True)
+    out, _ = run(8.0, "STOP", before="Well.")
     commits = out.commits()
     assert all(c.startswith(" ") for c in commits)
     assert "".join(commits) == " " + FULL
@@ -138,13 +138,13 @@ def test_a_failing_model_reports_an_error_and_the_session_still_ends():
         raise RuntimeError("engine fell over")
 
     out = Out()
-    backend.run_session(broken, False, Script(3, "STOP"), out, FakeRecorder(1.0), clock=lambda: 0.0)
+    backend.run_session(broken, None, Script(3, "STOP"), out, FakeRecorder(1.0), clock=lambda: 0.0)
     assert out.messages[-2] == ("ERROR", "RuntimeError: engine fell over") and out.kinds()[-1] == "DONE"
 
 
 def test_serve_ignores_a_late_stop_and_runs_sessions_until_input_ends():
     commands = queue.Queue()
-    for command in ("STOP", "CANCEL", "START\t0", "STOP", None):
+    for command in ("STOP", "CANCEL", "START\t0\t", "STOP", None):
         commands.put(command)
     out = Out()
     backend.serve(fake_model, commands, out, record=lambda: FakeRecorder(0.5), interval=0.1)
@@ -165,8 +165,29 @@ def test_serve_reports_a_microphone_that_cannot_start():
         raise FileNotFoundError("pw-record")
 
     commands = queue.Queue()
-    for command in ("START\t0", "STOP", None):
+    for command in ("START\t0\t", "STOP", None):
         commands.put(command)
     out = Out()
     backend.serve(fake_model, commands, out, record=no_mic)
     assert out.messages == [("READY",), ("ERROR", "cannot record: pw-record"), ("DONE",)]
+
+
+def test_mid_sentence_the_first_word_loses_its_capital_in_preview_and_commit():
+    out, _ = run(8.0, "STOP", before="When I start a sentence like this, ")
+    assert "".join(out.commits()) == "and so, my fellow Americans, ask not what your country can do for you."
+    previews = [m[1] + m[2] for m in out.messages if m[0] == "PREEDIT" and (m[1] or m[2])]
+    assert any(p.startswith("and") for p in previews) and not any(p.startswith("And") for p in previews)
+
+
+def test_at_a_sentence_start_the_first_word_is_capitalized():
+    out, _ = run(8.0, "STOP", before="Done. ")
+    assert "".join(out.commits()).startswith("And so,")
+
+
+def test_serve_passes_the_escaped_context_to_the_session():
+    commands = queue.Queue()
+    for command in ("START\t1\tline one\\nand so on, ", "STOP", None):
+        commands.put(command)
+    out = Out()
+    backend.serve(fake_model, commands, out, record=lambda: FakeRecorder(3.0), interval=0.1)
+    assert "".join(out.commits()) == "and so, my fellow Americans,"
