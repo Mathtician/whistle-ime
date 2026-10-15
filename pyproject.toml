@@ -8,6 +8,10 @@ dependencies = [
     "numpy",
 ]
 
+[project.optional-dependencies]
+# --model whisper-tiny|whisper-base: openai-whisper and torch (the GPU when torch sees one).
+whisper = ["cactus-needle[compare]"]
+
 [project.scripts]
 whistle-ime-backend = "whistle_ime.backend:main"
 
