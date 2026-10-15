@@ -15,7 +15,13 @@ def test_needs_space(before, expected):
     ("", True), ("   ", True), ("Dear Bob,\n", True), ("Done.", True), ("Done. ", True), ("Really?", True),
     ("Wow!  ", True), ("He said “stop.” ", True), ("(See above.) ", True), ("Wait…", True),
     ("like this, ", False), ("like this", False), ("a list:", False),
-    ("e.g. ", True),  # abbreviations look like sentence ends
+    # Android's abbreviation rule: letters with single periods between them do not end a sentence...
+    ("e.g. ", False), ("in the U.S. ", False), ("at 5 a.m. ", False), ("i.e.", False),
+    # ...but a word and a period does, abbreviation or not.
+    ("Ask Mr. ", True), ("yes.", True), ("...yes. ", True), ("version 3. ", True),
+    (" . ", False),  # a stand-alone period
+    ("He said. “", True), ("Done. (", True),  # opening punctuation at the cursor is skipped
+    ('") ', False),  # only closers before the cursor
 ])
 def test_starts_sentence(before, expected):
     assert starts_sentence(before) is expected

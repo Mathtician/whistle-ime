@@ -24,12 +24,50 @@ def needs_space(before):
 
 
 def starts_sentence(before):
-    """Whether text after `before` starts a sentence: at the start, after a newline or a sentence end."""
-    text = before.rstrip(" \t")
+    """Whether text after `before` starts a sentence: at the start, after a newline or a sentence end.
+
+    Follows Android's keyboard (AOSP LatinIME CapsModeUtils.getCapsMode, English rules): opening punctuation
+    at the cursor is skipped, closing quotes and brackets may follow the terminator, and a period ends a
+    sentence unless it ends an abbreviation of letters and single periods ("e.g.", "U.S.") or stands alone.
+    Unlike Android it needs no space after the terminator, since the backend adds one.
+    """
+    text = before.rstrip(OPENERS).rstrip(" \t")
     if not text or text.endswith("\n"):
         return True
     text = text.rstrip(CLOSERS)
-    return not text or text[-1] in SENTENCE_ENDS
+    if not text:
+        return False
+    if text[-1] in "!?…":
+        return True
+    return text[-1] == "." and _period_ends_sentence(text[:-1])
+
+
+def _period_ends_sentence(text):
+    """Whether a period right after `text` is a full stop; Android's state machine, read backwards."""
+    state = "start"
+    for c in reversed(text):
+        if state == "start":  # just before the period
+            if c.isalpha():
+                state = "word"
+            elif c.isspace():
+                return False  # a stand-alone period
+            else:
+                return True  # several periods or symbols in a row, digits ("3.")
+        elif state == "word":  # within the word before the period
+            if c == ".":
+                state = "period"
+            elif not c.isalpha():
+                return True  # a word with a full stop
+        elif state == "period":  # a period within a potential abbreviation
+            if not c.isalpha():
+                return True
+            state = "letter"
+        elif state == "letter":  # a letter within a potential abbreviation
+            if c == ".":
+                state = "period"
+            elif not c.isalpha():
+                return False  # an abbreviation
+    return state not in ("start", "letter")
 
 
 def fit_first_word(word, before, keywords=()):
