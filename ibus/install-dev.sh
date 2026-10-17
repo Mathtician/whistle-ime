@@ -13,6 +13,7 @@ install -m 644 "$2" "$prefix/whistle.cact"
 cat > "$exec_path" <<LAUNCHER
 #!/bin/sh
 export WHISTLE_IME_LIB=$prefix/libneedle.so WHISTLE_IME_WEIGHTS=$prefix/whistle.cact PYTHONPATH=$prefix/src
+[ -f "\$HOME/.config/whistle-ime/debug" ] && export WHISTLE_IME_DEBUG=1  # touch it to log every key
 exec python3 -m whistle_ime.ibus_engine "\$@"
 LAUNCHER
 chmod 755 "$exec_path"

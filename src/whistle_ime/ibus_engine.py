@@ -102,7 +102,11 @@ class WhistleEngine(IBus.Engine):
     # ---- IBus -> frontend ----
 
     def do_process_key_event(self, keyval, keycode, state):
-        return FRONTEND.key(self, to_key(keyval, keycode, state))
+        key = to_key(keyval, keycode, state)
+        handled = FRONTEND.key(self, key)
+        log.debug("key %s mods=%s release=%s state=0x%x -> %s (%s)", key.name, sorted(key.mods), key.release, state,
+                  "consumed" if handled else "passed", FRONTEND.state)
+        return handled
 
     def do_enable(self):
         self.get_surrounding_text()  # tells IBus this engine wants surrounding text from now on
@@ -121,7 +125,11 @@ class WhistleEngine(IBus.Engine):
         self.cursor = (x, y, w, h)
         FRONTEND.cursor_moved(self)
 
+    def do_focus_in(self):
+        log.debug("focus in: surrounding=%s", self.supports_surrounding)
+
     def do_focus_out(self):
+        log.debug("focus out")
         FRONTEND.focus_out(self)
 
     def do_disable(self):
@@ -161,7 +169,8 @@ def main():
 
     logdir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "whistle-ime"
     logdir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=logdir / "engine.log", level=logging.INFO,
+    debug = os.environ.get("WHISTLE_IME_DEBUG") == "1"  # logs every key (names only, no text) and state change
+    logging.basicConfig(filename=logdir / "engine.log", level=logging.DEBUG if debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     log.info("starting: language=%s trigger=%s", args.language, args.trigger)
 
