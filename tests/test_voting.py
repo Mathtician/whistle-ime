@@ -149,6 +149,7 @@ def test_a_lone_thank_you_early_in_a_window_counts_as_nothing():
         return recording.observe(lambda samples: words).words
 
     assert heard([("Thank", 0.3, 0.9), ("you.", 0.8, 0.9)]) == ()
+    assert heard([("you", 0.4, 0.6)]) == ()  # what it says on the first, very short windows
     # said later in the window, or with anything else, it is kept
     assert len(heard([("Thank", 2.4, 0.9), ("you.", 2.8, 0.9)])) == 2
     assert len(heard([("Thank", 0.3, 0.9), ("you.", 0.8, 0.9), ("Bob.", 1.2, 0.9)])) == 3

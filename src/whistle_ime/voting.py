@@ -31,9 +31,9 @@ SETTLED = 2.0  # how far, in full votes, the winner leads the runner-up before i
 FRAME_SECONDS = 0.08
 NOTHING = None  # the candidate for "no word in this slot"
 # What the model says over silence or background noise, alone and near the window's start, wherever that start
-# is. A pass that hears only this, that early, counts as hearing nothing. So a real "Thank you." still shows
-# after other words or later in a window, but not alone in the first seconds of a dictation.
-SILENCE_PHRASE = ("thank", "you")
+# is. A pass that hears only one of these, that early, counts as hearing nothing. So a real "Thank you." still
+# shows after other words or later in a window, but not alone in the first seconds of a dictation.
+SILENCE_PHRASES = {("thank", "you"), ("you",)}
 # In recorded silence and noise, 0.9 s kept it from being committed, and 1.3 s also kept it out of the
 # preview (where 11 passes put it at 1.2 s). Later lone passes are outvoted by the ignored ones around them.
 SILENCE_PHRASE_SECONDS = 1.3
@@ -212,7 +212,7 @@ class Transcript:
 
 def is_silence_phrase(words):
     """Whether a pass's words, timed from its window's start, are only the model's stock phrase for silence."""
-    return (tuple(normalize(text) for text, _, _ in words) == SILENCE_PHRASE
+    return (tuple(normalize(text) for text, _, _ in words) in SILENCE_PHRASES
             and words[-1][1] <= SILENCE_PHRASE_SECONDS)
 
 
