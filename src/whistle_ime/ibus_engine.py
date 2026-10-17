@@ -31,6 +31,11 @@ MODIFIER_KEYS = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R
                  "Meta_R", "Hyper_L", "Hyper_R", "ISO_Level3_Shift", "ISO_Level5_Shift", "Caps_Lock", "Num_Lock"}
 
 
+def describe(text):
+    """A debug-log description of field text without its content: None, empty, or length and last character."""
+    return "unknown" if text is None else f"{len(text)} chars, last {text[-1:]!r}"
+
+
 def to_key(keyval, keycode, state):
     mods = set()
     if state & IBus.ModifierType.SHIFT_MASK:
@@ -58,6 +63,7 @@ class ThreadBackend:
 
     def start(self, before):
         assert self.commands is None, "one session at a time"
+        log.debug("start: context %s", describe(before))
         commands = self.commands = queue.Queue()
 
         def emit(*fields):
@@ -119,24 +125,27 @@ class WhistleEngine(IBus.Engine):
         self.get_surrounding_text()  # tells IBus this engine wants surrounding text from now on
 
     def do_set_capabilities(self, caps):
+        log.debug("field %x capabilities 0x%x", id(self), caps)
         self.supports_surrounding = bool(caps & IBus.Capabilite.SURROUNDING_TEXT)
         if not self.supports_surrounding:
             self.before = None
 
     def do_set_surrounding_text(self, text, cursor_pos, anchor_pos):
+        whole = text.get_text()
         if self.supports_surrounding:
-            whole = text.get_text()
             self.before = whole[:cursor_pos]
+        log.debug("field %x surrounding: %d chars, cursor %d, supported %s -> before %s", id(self), len(whole),
+                  cursor_pos, self.supports_surrounding, describe(self.before))
 
     def do_set_cursor_location(self, x, y, w, h):
         self.cursor = (x, y, w, h)
         FRONTEND.cursor_moved(self)
 
     def do_focus_in(self):
-        log.debug("focus in: surrounding=%s", self.supports_surrounding)
+        log.debug("field %x focus in: surrounding=%s", id(self), self.supports_surrounding)
 
     def do_focus_out(self):
-        log.debug("focus out")
+        log.debug("field %x focus out", id(self))
         FRONTEND.focus_out(self)
 
     def do_disable(self):
