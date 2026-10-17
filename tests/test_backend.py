@@ -236,3 +236,11 @@ def test_sessions_are_saved_only_while_switched_on(tmp_path, monkeypatch):
     assert any(e[1] == "COMMIT" for e in record["events"]) and record["events"][-1][1:] == ["DONE", "0"]
     with wave.open(str(saved[1])) as w:
         assert w.getframerate() == 16000 and w.getnframes() == 3 * 16000
+
+
+def test_two_sessions_within_one_second_keep_separate_files(tmp_path):
+    from whistle_ime.recordings import SessionRecording
+
+    stems = [SessionRecording(tmp_path, None, 1700000000.25).save(), SessionRecording(tmp_path, None, 1700000000.75).save()]
+    assert stems[0] != stems[1]
+    assert len(list(tmp_path.iterdir())) == 4

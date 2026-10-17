@@ -67,7 +67,7 @@ class SessionRecording:
     def save(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         millis = int(self.started * 1000) % 1000  # two dictations can start within one second
-        stem = self.directory / (time.strftime("%Y-%m-%dT%H-%M-%S", time.localtime(self.started)) + f".{millis:03d}")
+        stem = self.directory / (time.strftime("%Y-%m-%dT%H-%M-%S", time.localtime(self.started)) + f"-{millis:03d}")  # not ".": with_suffix would replace it
         audio = numpy.concatenate(self.chunks) if self.chunks else numpy.zeros(0, numpy.float32)
         with wave.open(str(stem.with_suffix(".wav")), "wb") as out:
             out.setnchannels(1)
