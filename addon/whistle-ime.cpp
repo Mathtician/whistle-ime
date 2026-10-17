@@ -232,7 +232,8 @@ private:
                 continue;
             }
             const auto eq = line.find('=');
-            if (eq == std::string::npos || line.compare(0, 1, "_") == 0) {
+            // _k_friendly_name is a label; custom command shortcuts are stored as _launch=, so keep those
+            if (eq == std::string::npos || line.compare(0, eq, "_k_friendly_name") == 0) {
                 continue;
             }
             // name=active shortcuts (tab-separated),default,description
