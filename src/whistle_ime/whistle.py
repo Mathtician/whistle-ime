@@ -15,6 +15,19 @@ import numpy
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
 LIMIT_SECONDS = 30  # the engine refuses longer audio
 SAMPLE_RATE = 16000
+# Double quotation marks, in the languages above. The model adds them when it guesses speech is a quotation,
+# which dictation never asks for. Apostrophes (' and ’) stay: they are part of words.
+QUOTES = '"“”„«»'
+
+
+def without_quotes(word):
+    """The word without quotation marks, or None when one closes it. The engine times a word by its last token,
+    and a closing quote's time can be a second or more late ('much."' at 3.12 s where every other pass said
+    2.12 s), so the word would vote in the wrong place; the passes around it place it right."""
+    word = word.strip()
+    if word and word[-1] in QUOTES:
+        return None
+    return word.translate(str.maketrans("", "", QUOTES))
 
 
 class Whistle:
@@ -57,4 +70,5 @@ class Whistle:
         if code < 0:
             raise RuntimeError(self._error())
         result = json.loads(self.buffer.value.decode("utf-8", "replace"))
-        return [(w["word"].strip(), w["end"], w["probability"]) for w in result.get("words", []) if w["word"].strip()]
+        words = [(without_quotes(w["word"]) or "", w["end"], w["probability"]) for w in result.get("words", [])]
+        return [(text, end, probability) for text, end, probability in words if text]
