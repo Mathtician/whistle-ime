@@ -42,9 +42,10 @@ def to_key(keyval, keycode, state):
     if state & (IBus.ModifierType.MOD4_MASK | IBus.ModifierType.SUPER_MASK):
         mods.add("super")
     name = IBus.keyval_name(keyval) or ""
-    char = IBus.keyval_to_unicode(keyval)
-    printable = char >= 0x20 and char != 0x7f and not mods & {"ctrl", "alt", "super"}
-    return Key(name, chr(char) if printable else "", frozenset(mods), bool(state & IBus.ModifierType.RELEASE_MASK),
+    char = IBus.keyval_to_unicode(keyval)  # PyGObject returns the character as a str, "\0" or "" for none
+    code = ord(char) if char else 0
+    printable = code >= 0x20 and code != 0x7f and not mods & {"ctrl", "alt", "super"}
+    return Key(name, char if printable else "", frozenset(mods), bool(state & IBus.ModifierType.RELEASE_MASK),
                name in MODIFIER_KEYS, (keyval, keycode, state))
 
 
@@ -102,8 +103,14 @@ class WhistleEngine(IBus.Engine):
     # ---- IBus -> frontend ----
 
     def do_process_key_event(self, keyval, keycode, state):
-        key = to_key(keyval, keycode, state)
-        handled = FRONTEND.key(self, key)
+        # IBus discards an engine's stderr and treats an exception as "not handled", so a bug here would make
+        # the engine silently inert: log it instead, and let the key through.
+        try:
+            key = to_key(keyval, keycode, state)
+            handled = FRONTEND.key(self, key)
+        except Exception:
+            log.exception("key handling failed for keyval 0x%x state 0x%x", keyval, state)
+            return False
         log.debug("key %s mods=%s release=%s state=0x%x -> %s (%s)", key.name, sorted(key.mods), key.release, state,
                   "consumed" if handled else "passed", FRONTEND.state)
         return handled
