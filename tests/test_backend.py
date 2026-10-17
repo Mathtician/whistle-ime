@@ -215,3 +215,24 @@ def test_an_escaped_backslash_in_the_end_key_text_round_trips():
     from whistle_ime.context import escape
     assert parse_end_key(["backslash", "", escape("\\")]).text == "\\"
     assert parse_end_key([]) is None
+
+
+def test_sessions_are_saved_only_while_switched_on(tmp_path, monkeypatch):
+    import json
+    import wave
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    run(2.0, "STOP")
+    assert not (tmp_path / "cache").exists()  # off by default
+    (tmp_path / "config" / "whistle-ime").mkdir(parents=True)
+    (tmp_path / "config" / "whistle-ime" / "save-sessions").touch()
+    out, _ = run(3.0, "STOP", before="Secret text, ")
+    saved = sorted((tmp_path / "cache" / "whistle-ime" / "sessions").iterdir())
+    assert [p.suffix for p in saved] == [".json", ".wav"]
+    record = json.loads(saved[0].read_text())
+    assert record["before"] == {"chars": len("Secret text, ")}  # never the text itself
+    assert record["seconds"] == 3.0 and record["passes"] and record["passes"][-1]["end"] == 3.0
+    assert any(e[1] == "COMMIT" for e in record["events"]) and record["events"][-1][1:] == ["DONE", "0"]
+    with wave.open(str(saved[1])) as w:
+        assert w.getframerate() == 16000 and w.getnframes() == 3 * 16000

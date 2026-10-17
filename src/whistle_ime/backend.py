@@ -38,7 +38,7 @@ import traceback
 
 import numpy
 
-from whistle_ime import voting
+from whistle_ime import recordings, voting
 from whistle_ime.context import fit_first_word, needs_space, unescape
 from whistle_ime.finish import EndKey, finish
 from whistle_ime.whistle import LANGUAGES, Whistle
@@ -180,6 +180,16 @@ def parse_end_key(fields):
 def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL_SECONDS, clock=time.monotonic,
                 keywords=()):
     """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF)."""
+    saving = recordings.start(before)  # None unless the user switched session saving on
+    if saving is not None:
+        hear, emit = saving.wrap_hear(hear), saving.wrap_emit(emit)
+
+    def take():
+        samples = recorder.take()
+        if saving is not None:
+            saving.add_audio(samples)
+        return samples
+
     session = Session(hear, before, emit, keywords)
     next_tick = clock() + interval
     keep_serving = True
@@ -191,7 +201,7 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
             except queue.Empty:
                 command = TICK
             if command is TICK:
-                session.append(recorder.take())
+                session.append(take())
                 session.tick()
                 next_tick = max(next_tick + interval, clock())  # fell behind: skip ticks rather than burst
             elif command is None:
@@ -200,7 +210,7 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
             elif command.split("\t")[0] == "STOP":
                 end_key = parse_end_key(command.split("\t")[1:])
                 recorder.stop()
-                session.append(recorder.take())
+                session.append(take())
                 absorbed = session.close(end_key)
                 break
             elif command == "CANCEL":
@@ -213,6 +223,11 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
     finally:
         recorder.stop()
     emit("DONE", "1" if absorbed else "0")
+    if saving is not None:
+        try:
+            saving.save()
+        except OSError:
+            traceback.print_exc()  # a full disk must not break dictation
     return keep_serving
 
 

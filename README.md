@@ -38,16 +38,6 @@ Keyboard > Virtual Keyboard so KWin launches it, and make sure nothing else auto
 package's own autostart entry will otherwise grab its D-Bus name first; hide it with a
 `~/.config/autostart/org.fcitx.Fcitx5.desktop` containing `Hidden=true`).
 
-If the first word of a dictation gets cut off, your microphone may be fading in after PipeWire suspended
-it. Disabling suspension for inputs fixes it:
-
-```nix
-services.pipewire.wireplumber.extraConfig."51-mic-no-suspend"."monitor.alsa.rules" = [{
-  matches = [ { "node.name" = "~alsa_input.*"; } ];
-  actions.update-props."session.suspend-timeout-seconds" = 0;
-}];
-```
-
 ## Install on GNOME / Ubuntu (development)
 
 Distribution packages are on the way; until then, on Debian or Ubuntu with a source checkout:
@@ -130,6 +120,11 @@ Protocol between addon and backend, one message per line, tab-separated:
 | `ERROR <message>` | |
 
 ## Development
+
+To collect real sessions for tuning (for example hallucinations on background noise), `touch
+~/.config/whistle-ime/save-sessions`: each dictation then saves its audio and a JSON log of every model pass
+and every message to `~/.cache/whistle-ime/sessions/`. Of the text before the cursor only its length is kept.
+Remove the file to stop, and delete the folder when done.
 
 `nix develop` gives cmake and fcitx5 for the addon; the backend is a uv project (`uv run pytest`). Running
 the backend outside Nix needs `WHISTLE_IME_LIB` (libneedle.so) and `WHISTLE_IME_WEIGHTS` (whistle.cact),
