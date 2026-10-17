@@ -34,7 +34,9 @@ NOTHING = None  # the candidate for "no word in this slot"
 # is. A pass that hears only this, that early, counts as hearing nothing. So a real "Thank you." still shows
 # after other words or later in a window, but not alone in the first seconds of a dictation.
 SILENCE_PHRASE = ("thank", "you")
-SILENCE_PHRASE_SECONDS = 2.0  # the latest end, into the window, seen for it in recorded silence was 1.7 s
+# In recorded silence and noise, 0.9 s kept it from being committed, and 1.3 s also kept it out of the
+# preview (where 11 passes put it at 1.2 s). Later lone passes are outvoted by the ignored ones around them.
+SILENCE_PHRASE_SECONDS = 1.3
 
 
 def normalize(word):
