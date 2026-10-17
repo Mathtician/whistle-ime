@@ -1,3 +1,4 @@
+import numpy
 import pytest
 
 from whistle_ime import voting as live
@@ -137,3 +138,18 @@ def test_the_closing_window_trusts_its_right_edge_and_freezes_everything():
     assert transcript.slots == []
     assert transcript.text() == "your country"
 
+
+
+def test_a_lone_thank_you_early_in_a_window_counts_as_nothing():
+    from whistle_ime.voting import Recording
+
+    def heard(words):
+        recording = Recording(16000)
+        recording.append(numpy.zeros(4 * 16000, numpy.float32))
+        return recording.observe(lambda samples: words).words
+
+    assert heard([("Thank", 0.3, 0.9), ("you.", 0.8, 0.9)]) == ()
+    # said later in the window, or with anything else, it is kept
+    assert len(heard([("Thank", 2.4, 0.9), ("you.", 2.8, 0.9)])) == 2
+    assert len(heard([("Thank", 0.3, 0.9), ("you.", 0.8, 0.9), ("Bob.", 1.2, 0.9)])) == 3
+    assert len(heard([("Thank", 0.3, 0.9)])) == 1

@@ -30,6 +30,11 @@ MATCH_SECONDS = 0.3  # the largest end-time gap at which two windows' words can 
 SETTLED = 2.0  # how far, in full votes, the winner leads the runner-up before it counts as settled
 FRAME_SECONDS = 0.08
 NOTHING = None  # the candidate for "no word in this slot"
+# What the model says over silence or background noise, alone and near the window's start, wherever that start
+# is. A pass that hears only this, that early, counts as hearing nothing. So a real "Thank you." still shows
+# after other words or later in a window, but not alone in the first seconds of a dictation.
+SILENCE_PHRASE = ("thank", "you")
+SILENCE_PHRASE_SECONDS = 2.0  # the latest end, into the window, seen for it in recorded silence was 1.7 s
 
 
 def normalize(word):
@@ -203,6 +208,12 @@ class Transcript:
         return " ".join(text for text, _ in self.words())
 
 
+def is_silence_phrase(words):
+    """Whether a pass's words, timed from its window's start, are only the model's stock phrase for silence."""
+    return (tuple(normalize(text) for text, _, _ in words) == SILENCE_PHRASE
+            and words[-1][1] <= SILENCE_PHRASE_SECONDS)
+
+
 class Recording:
     """16 kHz samples heard so far, keeping only the last window's worth."""
 
@@ -224,7 +235,10 @@ class Recording:
 
     def observe(self, hear, closes=False):
         start = self.dropped / self.rate
-        words = tuple((text, start + end, probability) for text, end, probability in hear(self.samples) if text)
+        heard = [(text, end, probability) for text, end, probability in hear(self.samples) if text]
+        if is_silence_phrase(heard):
+            heard = []
+        words = tuple((text, start + end, probability) for text, end, probability in heard)
         return Window(start, self.heard(), words, opens_recording=self.dropped == 0, closes_recording=closes)
 
 
