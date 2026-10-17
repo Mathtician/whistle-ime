@@ -126,6 +126,7 @@ public:
         focusHandler_ = instance_->watchEvent(
             EventType::InputContextFocusOut, EventWatcherPhase::Default, [this](Event &event) {
                 auto &focus = static_cast<FocusOutEvent &>(event);
+                triggerDown_ = false;  // the trigger's release may go to whatever has focus now
                 if (shadow_.tracks(focus.inputContext()->uuid())) {
                     shadow_.invalidate();
                 }
@@ -175,12 +176,21 @@ private:
 
     void onKey(KeyEvent &event) {
         const Key &key = event.key();
-        const bool trigger = key.checkKeyList(config_.triggerKey.value());
         if (event.isRelease()) {
-            if (trigger) {
+            // Modifiers are often let go first, so the trigger key's release can arrive with fewer of them.
+            if (triggerDown_ && isTriggerKey(key)) {
+                triggerDown_ = false;
                 event.filterAndAccept();  // its press was ours, so its release is too
             }
             return;
+        }
+        const bool trigger = key.checkKeyList(config_.triggerKey.value());
+        if (trigger) {
+            if (triggerDown_) {
+                event.filterAndAccept();  // auto-repeat while held: one press is one toggle
+                return;
+            }
+            triggerDown_ = true;
         }
         switch (state_) {
         case State::Idle:
@@ -215,6 +225,17 @@ private:
             }
             return;  // other keys belong to wherever focus went
         }
+    }
+
+    // The key of a trigger chord, whatever modifiers are held.
+    bool isTriggerKey(const Key &key) const {
+        const auto lower = [](KeySym sym) { return Key::keySymToUnicode(sym) ? std::tolower(Key::keySymToUnicode(sym)) : 0u; };
+        for (const auto &trigger : config_.triggerKey.value()) {
+            if (key.sym() == trigger.sym() || (lower(key.sym()) && lower(key.sym()) == lower(trigger.sym()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Warn if KWin has a global shortcut on our trigger: KWin would take the key before fcitx5 sees it.
@@ -685,6 +706,7 @@ private:
     CapabilityFlags savedCaps_{};
     std::vector<Key> held_;  // keys pressed after STOP, replayed in order after the final commit
     bool errorShown_ = false;
+    bool triggerDown_ = false;  // the trigger key is held: further presses are auto-repeat
     Shadow shadow_;
     WhistleImeDBus dbusObject_{this};
 };

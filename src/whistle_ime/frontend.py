@@ -58,6 +58,11 @@ class Trigger:
     def matches(self, key):
         return key.name.lower() == self.name and key.mods == self.mods
 
+    def same_key(self, key):
+        """Whether `key` is the trigger's key, whatever modifiers are held: modifiers are often released first,
+        so the key's release can arrive with fewer of them than its press."""
+        return key.name.lower() == self.name
+
 
 class Frontend:
     def __init__(self, backend, trigger, clock=time.monotonic):
@@ -70,14 +75,22 @@ class Frontend:
         self.held = []  # keys from the one that ended the dictation on, replayed after the final commit
         self.preview = ""  # the current preedit: what is not committed yet
         self.shadow = Shadow()
+        self.trigger_down = False  # the trigger's key is held: further presses are auto-repeat
 
     # ---- keys ----------------------------------------------------------------------------------------
 
     def key(self, ui, key):
         """Handle a key in `ui`; True if it was consumed, False if it goes on to the app."""
-        trigger = self.trigger.matches(key)
         if key.release:
-            return trigger  # the trigger's release belongs to us too; nothing else is held back
+            if self.trigger_down and self.trigger.same_key(key):
+                self.trigger_down = False
+                return True  # its press was ours, so its release is too
+            return False
+        trigger = self.trigger.matches(key)
+        if trigger:
+            if self.trigger_down:
+                return True  # auto-repeat while held: one press is one toggle
+            self.trigger_down = True
         if self.state == "idle":
             if trigger:
                 self.start(ui)
@@ -150,6 +163,7 @@ class Frontend:
         self.backend.stop(EndKey(key.name, key.text, key.mods) if key else None)
 
     def focus_out(self, ui):
+        self.trigger_down = False  # the trigger's release may have gone to whatever has focus now
         if self.shadow.tracks(ui):
             self.shadow.invalidate()
         if ui is self.owner and self.state in ("recording", "finishing"):

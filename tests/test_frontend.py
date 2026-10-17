@@ -55,6 +55,12 @@ class Clock:
         return self.now
 
 
+def tap(f, ui):
+    """A toggle as a person does it: press, then release."""
+    f.key(ui, TRIGGER_PRESS)
+    f.key(ui, TRIGGER_RELEASE)
+
+
 def frontend():
     clock = Clock()
     return Frontend(Backend(), Trigger.parse("Super+Alt+V"), clock), clock
@@ -92,7 +98,7 @@ def test_ordinary_keys_pass_through_while_idle():
 def test_a_plain_key_while_dictating_stops_and_lands_after_the_final_text():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     assert f.key(ui, key("x", "x")) and f.state == "finishing"
     assert f.backend.calls[-1] == ("stop", "x")  # the backend learns which key ended the dictation
     assert f.key(ui, key("BackSpace"))  # pressed during the final pass: held too
@@ -104,7 +110,7 @@ def test_a_plain_key_while_dictating_stops_and_lands_after_the_final_text():
 def test_a_key_the_backend_absorbed_is_not_replayed_but_later_keys_are():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     f.on_backend("PREEDIT", " apples", " pears.")
     assert f.key(ui, key("comma", ","))
     assert f.key(ui, key("space", " "))
@@ -117,7 +123,7 @@ def test_a_key_the_backend_absorbed_is_not_replayed_but_later_keys_are():
 def test_ctrl_backspace_ends_dictation_only_when_there_is_a_preview():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     f.on_backend("PREEDIT", " hello", " world")
     assert f.key(ui, key("BackSpace", mods={"ctrl"})) and f.backend.calls[-1] == ("stop", "BackSpace")
     f2, _ = frontend()
@@ -129,7 +135,7 @@ def test_ctrl_backspace_ends_dictation_only_when_there_is_a_preview():
 def test_a_chord_while_dictating_stops_and_passes_straight_through():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     assert not f.key(ui, key("Return", mods={"ctrl"})) and f.state == "finishing"
     f.on_backend("DONE")
     assert ("forward", "Return") not in ui.out
@@ -138,21 +144,21 @@ def test_a_chord_while_dictating_stops_and_passes_straight_through():
 def test_modifiers_alone_never_stop_dictation():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     assert not f.key(ui, key("Shift_L", modifier=True)) and f.state == "recording"
 
 
 def test_escape_stops():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     assert f.key(ui, key("Escape")) and f.state == "finishing"
 
 
 def test_focus_loss_cancels_and_drops_everything_until_done():
     f, _ = frontend()
     ui = UI(before="")
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     f.on_backend("COMMIT", "kept")
     f.focus_out(ui)
     assert f.state == "cancelling" and f.backend.calls[-1] == ("cancel",)
@@ -176,22 +182,22 @@ def test_context_prefers_the_report_then_the_shadow_then_the_empty_report():
 def test_the_shadow_carries_a_sentence_across_dictations_in_a_silent_app():
     f, clock = frontend()
     term = UI(before=None)
-    f.key(term, TRIGGER_PRESS)
+    tap(f, term)
     assert f.backend.calls[-1] == ("start", None)  # nothing known yet
-    f.key(term, TRIGGER_PRESS)
+    tap(f, term)
     f.on_backend("COMMIT", "When I start a sentence like this.")
     f.on_backend("DONE")
     clock.now += 5
     f.key(term, key("BackSpace"))  # remove the period
-    f.key(term, TRIGGER_PRESS)
+    tap(f, term)
     assert f.backend.calls[-1] == ("start", "When I start a sentence like this")
 
 
 def test_a_cursor_move_nobody_caused_or_a_navigation_key_kills_the_shadow():
     f, clock = frontend()
     term = UI(before=None)
-    f.key(term, TRIGGER_PRESS)
-    f.key(term, TRIGGER_PRESS)
+    tap(f, term)
+    tap(f, term)
     f.on_backend("COMMIT", "text")
     f.on_backend("DONE")
     term.cursor = (5, 0)
@@ -204,8 +210,8 @@ def test_a_cursor_move_nobody_caused_or_a_navigation_key_kills_the_shadow():
     assert not f.shadow.tracks(term)
     f2, _ = frontend()
     t2 = UI(before=None)
-    f2.key(t2, TRIGGER_PRESS)
-    f2.key(t2, TRIGGER_PRESS)
+    tap(f2, t2)
+    tap(f2, t2)
     f2.on_backend("COMMIT", "text")
     f2.on_backend("DONE")
     f2.key(t2, key("Left"))
@@ -215,7 +221,7 @@ def test_a_cursor_move_nobody_caused_or_a_navigation_key_kills_the_shadow():
 def test_focus_out_of_another_field_does_not_cancel():
     f, _ = frontend()
     a, b = UI(before=""), UI(before="")
-    f.key(a, TRIGGER_PRESS)
+    tap(f, a)
     f.focus_out(b)
     assert f.state == "recording"
 
@@ -225,6 +231,40 @@ def test_errors_are_shown_to_the_owner():
     shown = []
     ui = UI(before="")
     ui.status = shown.append
-    f.key(ui, TRIGGER_PRESS)
+    tap(f, ui)
     f.on_backend("ERROR", "cannot record: pw-record")
     assert "⚠ cannot record: pw-record" in shown
+
+
+def test_auto_repeat_of_a_held_trigger_toggles_only_once():
+    f, _ = frontend()
+    ui = UI(before="")
+    for _ in range(10):  # held past the repeat delay: a stream of presses, no release
+        assert f.key(ui, TRIGGER_PRESS)
+    assert f.state == "recording" and f.backend.calls == [("start", "")]
+    assert f.key(ui, TRIGGER_RELEASE)
+    assert f.key(ui, TRIGGER_PRESS) and f.state == "finishing"
+
+
+def test_the_triggers_release_counts_even_after_its_modifiers_were_let_go():
+    f, _ = frontend()
+    ui = UI(before="")
+    assert f.key(ui, TRIGGER_PRESS)  # held: the release follows below
+    assert not f.key(ui, key("Alt_L", mods={"super", "alt"}, release=True, modifier=True))
+    assert f.key(ui, key("v", mods={"super"}, release=True))  # V released with only Super still held
+    assert f.key(ui, TRIGGER_PRESS) and f.state == "finishing"  # so the next press is a real one
+
+
+def test_a_lost_release_is_forgiven_at_the_next_focus_change():
+    f, _ = frontend()
+    a, b = UI(before=""), UI(before="")
+    assert f.key(a, TRIGGER_PRESS)
+    f.focus_out(a)  # focus moved while the trigger was held; its release went elsewhere (and the session ends)
+    f.on_backend("DONE", "0")
+    assert f.key(b, TRIGGER_PRESS) and f.backend.calls[-1] == ("start", "")
+
+
+def test_other_releases_are_never_swallowed():
+    f, _ = frontend()
+    ui = UI(before="")
+    assert not f.key(ui, key("v", release=True))  # a plain V release while the trigger is up
