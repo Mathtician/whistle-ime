@@ -234,6 +234,7 @@ def test_sessions_are_saved_only_while_switched_on(tmp_path, monkeypatch):
     assert record["before"] == {"chars": len("Secret text, ")}  # never the text itself
     assert record["seconds"] == 3.0 and record["passes"] and record["passes"][-1]["end"] == 3.0
     assert any(e[1] == "COMMIT" for e in record["events"]) and record["events"][-1][1:] == ["DONE", "0"]
+    assert record["passes"][-1]["end_sample"] == 3 * 16000 and record["stop"] == []
     with wave.open(str(saved[1])) as w:
         assert w.getframerate() == 16000 and w.getnframes() == 3 * 16000
 
@@ -244,3 +245,15 @@ def test_two_sessions_within_one_second_keep_separate_files(tmp_path):
     stems = [SessionRecording(tmp_path, None, 1700000000.25).save(), SessionRecording(tmp_path, None, 1700000000.75).save()]
     assert stems[0] != stems[1]
     assert len(list(tmp_path.iterdir())) == 4
+
+
+def test_a_word_after_a_sentence_end_is_capitalized_whatever_its_slot_chose():
+    def model(samples):  # the period won in one slot, the lowercase in the next
+        return [("Done", 0.4, 0.9), ("now.", 0.8, 0.9), ("can", 1.2, 0.9), ("you", 1.4, 0.9), ("e.g.", 1.8, 0.9),
+                ("see", 2.1, 0.9)]
+
+    out = Out()
+    session = backend.Session(model, None, out)
+    session.append(numpy.zeros(3 * 16000, numpy.float32))
+    session.close()
+    assert out.commits() == ["Done now. Can you e.g. see"]

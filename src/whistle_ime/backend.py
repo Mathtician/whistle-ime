@@ -39,7 +39,7 @@ import traceback
 import numpy
 
 from whistle_ime import recordings, voting
-from whistle_ime.context import fit_first_word, needs_space, unescape
+from whistle_ime.context import capitalize, fit_first_word, needs_space, starts_sentence, unescape
 from whistle_ime.finish import EndKey, finish
 from whistle_ime.whistle import LANGUAGES, Whistle
 
@@ -100,11 +100,16 @@ class Session:
         return absorbed
 
     def _words(self):
-        # The first word is fitted to the text before the cursor; that depends only on its own text, so the
-        # preview shows exactly what will be committed.
+        # The first word is fitted to the text before the cursor, and a word after a sentence's end is
+        # capitalized: each slot picks its own form, so a period can win in one slot and the lowercase of the
+        # next word in another ("now. can"). Each depends only on the word itself and the one before, and
+        # committed words are a prefix that never changes, so the preview shows exactly what will be committed.
         words = self.transcript.words()
         if words:
             words[0] = (fit_first_word(words[0][0], self.before, self.keywords), words[0][1])
+        for i in range(1, len(words)):
+            if starts_sentence(words[i - 1][0]):
+                words[i] = (capitalize(words[i][0]), words[i][1])
         return words
 
     def publish(self):
@@ -209,6 +214,8 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
                 break
             elif command.split("\t")[0] == "STOP":
                 end_key = parse_end_key(command.split("\t")[1:])
+                if saving is not None:
+                    saving.stop = command.split("\t")[1:]
                 recorder.stop()
                 session.append(take())
                 absorbed = session.close(end_key)

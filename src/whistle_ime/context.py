@@ -75,6 +75,15 @@ def _period_ends_sentence(text):
     return state not in ("start", "letter")
 
 
+def capitalize(word):
+    """The word with its first letter uppercased."""
+    letters = [i for i, c in enumerate(word) if c.isalpha()]
+    if not letters:
+        return word
+    first = letters[0]
+    return word[:first] + word[first].upper() + word[first + 1:]
+
+
 def fit_first_word(word, before, keywords=()):
     """The dictation's first word, cased for what precedes it; `before` is None when the app reports nothing.
 
@@ -88,7 +97,7 @@ def fit_first_word(word, before, keywords=()):
         return word
     first = letters[0]
     if starts_sentence(before):
-        return word[:first] + word[first].upper() + word[first + 1:]
+        return capitalize(word)
     core = re.sub(r"^\W+|\W+$", "", word)
     spared = {w.casefold() for k in keywords for w in k.split()}
     if core.casefold() in I_FORMS or (len(core) > 1 and core.isupper()) or core.casefold() in spared:

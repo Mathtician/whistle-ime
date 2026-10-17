@@ -27,6 +27,9 @@ RIGHT_RAMP = 1.0  # a word ending this close to the window's right cut gets less
 LEFT_RAMP = 0.5
 FLOOR = 0.05  # the least weight a vote gets, so the newest words still show
 MATCH_SECONDS = 0.3  # the largest end-time gap at which two windows' words can be the same word
+# ... or, when they are the same word, this: a word's end can drift by more as later audio arrives ("keys"
+# ended at 2.1 s, then 2.48 s once "should" followed, and was committed twice)
+SAME_WORD_SECONDS = 0.5
 SETTLED = 2.0  # how far, in full votes, the winner leads the runner-up before it counts as settled
 FRAME_SECONDS = 0.08
 NOTHING = None  # the candidate for "no word in this slot"
@@ -106,9 +109,10 @@ class Slot:
 
 def _match_score(slot, text, t):
     gap = abs(slot.time - t)
-    if gap > MATCH_SECONDS:
+    same = normalize(text) == slot.leader()
+    if gap > (SAME_WORD_SECONDS if same else MATCH_SECONDS):
         return None
-    return 1.0 - gap / MATCH_SECONDS + (1.0 if normalize(text) == slot.leader() else 0.0)
+    return max(0.0, 1.0 - gap / MATCH_SECONDS) + (1.0 if same else 0.0)
 
 
 def align(slots, words):
@@ -168,11 +172,11 @@ class Transcript:
     def add(self, window):
         assert window.start >= self._last_start, "windows must not move backwards"
         self._last_start = window.start
-        while self.slots and self.slots[0].time < window.start - MATCH_SECONDS:
+        while self.slots and self.slots[0].time < window.start - SAME_WORD_SECONDS:  # out of any match's reach
             shown = self.slots.pop(0).shown()
             if shown is not None:
                 self.frozen.append(shown)
-        reach = [i for i, slot in enumerate(self.slots) if slot.time <= window.end + MATCH_SECONDS]
+        reach = [i for i, slot in enumerate(self.slots) if slot.time <= window.end + SAME_WORD_SECONDS]
         lo, hi = 0, (reach[-1] + 1 if reach else 0)
         merged = []
         for i, j in align(self.slots[lo:hi], window.words):

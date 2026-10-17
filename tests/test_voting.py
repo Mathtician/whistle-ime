@@ -56,7 +56,10 @@ def test_align_keeps_unmatched_slots_and_words_in_time_order():
 def test_align_never_matches_words_too_far_apart():
     slots = [Slot(time=1.0)]
     slots[0].vote("so", 1.0, 1.0)
-    assert align(slots, [("so", 1.0 + live.MATCH_SECONDS + 0.01, 1.0)]) == [(0, None), (None, 0)]
+    assert align(slots, [("sew", 1.0 + live.MATCH_SECONDS + 0.01, 1.0)]) == [(0, None), (None, 0)]
+    assert align(slots, [("so", 1.0 + live.SAME_WORD_SECONDS + 0.01, 1.0)]) == [(0, None), (None, 0)]
+    # the slot's own word drifts further
+    assert align(slots, [("So,", 1.0 + live.SAME_WORD_SECONDS - 0.01, 1.0)]) == [(0, 0)]
 
 
 def test_mid_window_readings_outvote_a_confident_right_edge_guess():
@@ -154,3 +157,20 @@ def test_a_lone_thank_you_early_in_a_window_counts_as_nothing():
     assert len(heard([("Thank", 2.4, 0.9), ("you.", 2.8, 0.9)])) == 2
     assert len(heard([("Thank", 0.3, 0.9), ("you.", 0.8, 0.9), ("Bob.", 1.2, 0.9)])) == 3
     assert len(heard([("Thank", 0.3, 0.9)])) == 1
+
+
+def test_a_word_whose_end_drifts_later_stays_one_word():
+    # "keys" ends at 2.1 s until the next word arrives, then at 2.48 s: more than MATCH_SECONDS apart
+    transcript = Transcript()
+    for end in (2.4, 2.5, 2.6, 2.7, 2.8):
+        transcript.add(window(0.0, end, [("which", 1.7, 0.9), ("keys", 2.1, 0.9)]))
+    for end in (3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6):
+        transcript.add(window(0.0, end, [("which", 1.7, 0.9), ("keys", 2.48, 0.9), ("should", 2.8, 0.9)]))
+    assert transcript.text() == "which keys should"
+
+
+def test_a_word_said_twice_stays_two_words():
+    transcript = Transcript()
+    for end in (2.0, 2.1, 2.2, 2.3, 2.4):
+        transcript.add(window(0.0, end, [("very", 1.2, 0.9), ("very", 1.6, 0.9), ("much", 1.9, 0.9)]))
+    assert transcript.text() == "very very much"
