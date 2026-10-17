@@ -1,6 +1,6 @@
 # services.whistle-ime: the fcitx5 addon, its backend and the `whistle-ime` command, configured. All are
 # built with the system's nixpkgs, so the addon matches the running fcitx5. Dictation starts and stops with
-# `whistle-ime`; bind it to a shortcut in the desktop's settings.
+# the trigger key; `whistle-ime toggle` does the same from scripts or a desktop shortcut.
 {
   config,
   lib,
@@ -21,6 +21,14 @@ in
 {
   options.services.whistle-ime = {
     enable = lib.mkEnableOption "dictation into the focused text field with whistle-ime (an fcitx5 addon)";
+    trigger = lib.mkOption {
+      type = lib.types.str;
+      default = "Super+Alt+V";
+      description = ''
+        fcitx5 key that starts and stops dictation, in fcitx5's notation ("Control+Alt+D"). KWin checks its
+        global shortcuts first, so a chord KWin also uses never reaches the addon; it logs a warning then.
+      '';
+    };
     language = lib.mkOption {
       type = lib.types.nullOr (lib.types.enum [ "en" "de" "fr" "es" "it" "nl" "pl" ]);
       default = "en";
@@ -52,7 +60,10 @@ in
       # System Settings > Keyboard > Virtual Keyboard so KWin launches it.
       fcitx5.waylandFrontend = lib.mkDefault true;
       fcitx5.addons = [ addon ];
-      fcitx5.settings.addons.whistle-ime.globalSection.Backend = "exec ${command}";
+      fcitx5.settings.addons.whistle-ime = {
+        globalSection.Backend = "exec ${command}";
+        sections.TriggerKey."0" = cfg.trigger;
+      };
     };
     environment.systemPackages = [ cli ];
   };

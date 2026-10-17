@@ -40,8 +40,8 @@ class Backend:
     def start(self, before):
         self.calls.append(("start", before))
 
-    def stop(self):
-        self.calls.append(("stop",))
+    def stop(self, end_key=None):
+        self.calls.append(("stop", end_key.name) if end_key else ("stop",))
 
     def cancel(self):
         self.calls.append(("cancel",))
@@ -94,10 +94,36 @@ def test_a_plain_key_while_dictating_stops_and_lands_after_the_final_text():
     ui = UI(before="")
     f.key(ui, TRIGGER_PRESS)
     assert f.key(ui, key("x", "x")) and f.state == "finishing"
+    assert f.backend.calls[-1] == ("stop", "x")  # the backend learns which key ended the dictation
     assert f.key(ui, key("BackSpace"))  # pressed during the final pass: held too
     f.on_backend("COMMIT", "Hello")
-    f.on_backend("DONE")
+    f.on_backend("DONE", "0")  # not absorbed: replayed after the commit
     assert ui.out[-3:] == [("preedit", "", ""), ("commit", "x"), ("forward", "BackSpace")]
+
+
+def test_a_key_the_backend_absorbed_is_not_replayed_but_later_keys_are():
+    f, _ = frontend()
+    ui = UI(before="")
+    f.key(ui, TRIGGER_PRESS)
+    f.on_backend("PREEDIT", " apples", " pears.")
+    assert f.key(ui, key("comma", ","))
+    assert f.key(ui, key("space", " "))
+    f.on_backend("COMMIT", " apples pears,")
+    f.on_backend("DONE", "1")
+    assert ui.out[-3:] == [("commit", " apples pears,"), ("preedit", "", ""), ("commit", " ")]
+    assert ("commit", ",") not in ui.out
+
+
+def test_ctrl_backspace_ends_dictation_only_when_there_is_a_preview():
+    f, _ = frontend()
+    ui = UI(before="")
+    f.key(ui, TRIGGER_PRESS)
+    f.on_backend("PREEDIT", " hello", " world")
+    assert f.key(ui, key("BackSpace", mods={"ctrl"})) and f.backend.calls[-1] == ("stop", "BackSpace")
+    f2, _ = frontend()
+    ui2 = UI(before="")
+    f2.key(ui2, TRIGGER_PRESS)  # no preview yet: nothing to delete a word from, so the app gets the chord
+    assert not f2.key(ui2, key("BackSpace", mods={"ctrl"})) and f2.backend.calls[-1] == ("stop",)
 
 
 def test_a_chord_while_dictating_stops_and_passes_straight_through():

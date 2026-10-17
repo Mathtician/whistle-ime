@@ -139,7 +139,7 @@ def test_a_failing_model_reports_an_error_and_the_session_still_ends():
 
     out = Out()
     backend.run_session(broken, None, Script(3, "STOP"), out, FakeRecorder(1.0), clock=lambda: 0.0)
-    assert out.messages[-2] == ("ERROR", "RuntimeError: engine fell over") and out.kinds()[-1] == "DONE"
+    assert out.messages[-2] == ("ERROR", "RuntimeError: engine fell over") and out.messages[-1] == ("DONE", "0")
 
 
 def test_serve_ignores_a_late_stop_and_runs_sessions_until_input_ends():
@@ -169,7 +169,7 @@ def test_serve_reports_a_microphone_that_cannot_start():
         commands.put(command)
     out = Out()
     backend.serve(fake_model, commands, out, record=no_mic)
-    assert out.messages == [("READY",), ("ERROR", "cannot record: pw-record"), ("DONE",)]
+    assert out.messages == [("READY",), ("ERROR", "cannot record: pw-record"), ("DONE", "0")]
 
 
 def test_mid_sentence_the_first_word_loses_its_capital_in_preview_and_commit():
@@ -191,3 +191,27 @@ def test_serve_passes_the_escaped_context_to_the_session():
     out = Out()
     backend.serve(fake_model, commands, out, record=lambda: FakeRecorder(3.0), interval=0.1)
     assert "".join(out.commits()) == "and so, my fellow Americans,"
+
+
+def test_typed_punctuation_ending_a_dictation_replaces_the_models_and_is_absorbed():
+    out, _ = run(8.0, "STOP\tcomma\t\t,")
+    assert "".join(out.commits()) == FULL[:-1] + ","
+    assert out.messages[-1] == ("DONE", "1")
+
+
+def test_ctrl_backspace_ending_a_dictation_drops_the_last_word():
+    out, _ = run(8.0, "STOP\tBackSpace\tctrl\t")
+    assert "".join(out.commits()) == FULL[:-len("you.")]
+    assert out.messages[-1] == ("DONE", "1")
+
+
+def test_a_letter_ending_a_dictation_is_handed_back_for_replay():
+    out, _ = run(8.0, "STOP\ta\t\ta")
+    assert "".join(out.commits()) == FULL and out.messages[-1] == ("DONE", "0")
+
+
+def test_an_escaped_backslash_in_the_end_key_text_round_trips():
+    from whistle_ime.backend import parse_end_key
+    from whistle_ime.context import escape
+    assert parse_end_key(["backslash", "", escape("\\")]).text == "\\"
+    assert parse_end_key([]) is None

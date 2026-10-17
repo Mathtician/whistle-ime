@@ -4,9 +4,11 @@ fcitx5 addon (addon/whistle-ime.cpp) is its C++ twin with a D-Bus trigger instea
 
 Session states:
   idle -> recording        trigger key, into the focused field
-  recording -> finishing   trigger key or Escape (STOP); a plain key also STOPs and is replayed after the
-                           final commit, so it lands after the dictated text; a chord (Ctrl/Alt/Super) STOPs
-                           and passes straight through, because replayed keys lose their modifiers on GNOME
+  recording -> finishing   trigger key or Escape (STOP); a plain key or Ctrl+Backspace also STOPs, carrying the
+                           key, and the backend decides from it what to commit (finish.py); a key it did not
+                           absorb is replayed after the final commit, so it lands after the dictated text;
+                           other chords (Ctrl/Alt/Super) STOP and pass straight through, because replayed keys
+                           lose their modifiers on GNOME
   recording/finishing -> cancelling
                            focus left the field (CANCEL); it can no longer receive commits, so everything
                            until DONE is dropped
@@ -22,6 +24,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from whistle_ime.finish import EndKey
 from whistle_ime.shadow import Shadow
 
 CHORD_MODS = frozenset({"ctrl", "alt", "super"})
@@ -58,13 +61,14 @@ class Trigger:
 
 class Frontend:
     def __init__(self, backend, trigger, clock=time.monotonic):
-        """backend has start(before), stop() and cancel(); its events come back through on_backend()."""
+        """backend has start(before), stop(end_key) and cancel(); its events come back through on_backend()."""
         self.backend = backend
         self.trigger = trigger
         self.clock = clock
         self.state = "idle"
         self.owner = None  # the ui of the current session
-        self.held = []  # plain keys pressed after STOP, replayed in order after the final commit
+        self.held = []  # keys from the one that ended the dictation on, replayed after the final commit
+        self.preview = ""  # the current preedit: what is not committed yet
         self.shadow = Shadow()
 
     # ---- keys ----------------------------------------------------------------------------------------
@@ -86,10 +90,11 @@ class Frontend:
                 return True
             if key.modifier:
                 return False
-            self.stop()
-            if key.mods & CHORD_MODS:
+            if not self.ends_dictation(key):
+                self.stop()
                 return False
             self.held.append(key)
+            self.stop(key)
             return True
         if self.state == "finishing":
             if trigger or key.name == "Escape":
@@ -100,6 +105,14 @@ class Frontend:
             return True
         # cancelling: the field already lost focus; only our own trigger is ours
         return trigger
+
+    def ends_dictation(self, key):
+        """Whether `key`, pressed while dictating, goes to the backend as the key that ended the dictation: plain
+        keys do, and Ctrl+Backspace while there is a preview to delete a word from. Other chords pass straight
+        through; replaying them would lose their modifiers on GNOME."""
+        if key.mods == {"ctrl"} and key.name == "BackSpace":
+            return bool(self.preview)
+        return not key.mods & CHORD_MODS
 
     def follow(self, ui, key):
         """A key reaching the app while idle: typed text extends the shadow, Backspace shortens it, anything
@@ -128,13 +141,13 @@ class Frontend:
         before = self.context(ui)  # read before the shadow is restarted below
         if not self.shadow.usable(ui, ui.cursor):
             self.shadow.reset(ui, ui.cursor, self.clock())
-        self.owner, self.held, self.state = ui, [], "recording"
+        self.owner, self.held, self.preview, self.state = ui, [], "", "recording"
         self.backend.start(before)
         ui.status("🎤 Dictating")
 
-    def stop(self):
+    def stop(self, key=None):
         self.state = "finishing"
-        self.backend.stop()
+        self.backend.stop(EndKey(key.name, key.text, key.mods) if key else None)
 
     def focus_out(self, ui):
         if self.shadow.tracks(ui):
@@ -160,15 +173,17 @@ class Frontend:
                 self.shadow.append(fields[0], self.clock())
         elif kind == "PREEDIT":
             self.owner.preedit(*fields)
+            self.preview = "".join(fields)
             self.shadow.touch(self.clock())
         elif kind == "DONE":
-            self.end("idle")
+            self.end("idle", absorbed=fields[:1] == ("1",))
 
-    def end(self, next_state):
-        """Leave the session: clear the preedit and, unless cancelled, replay held keys."""
-        owner, held = self.owner, self.held
+    def end(self, next_state, absorbed=False):
+        """Leave the session: clear the preedit and, unless cancelled, replay held keys (all but the one that
+        ended the dictation, if the backend absorbed it)."""
+        owner, held = self.owner, self.held[1:] if absorbed else self.held
         owner.preedit("", "")
-        self.held, self.state = [], next_state
+        self.held, self.preview, self.state = [], "", next_state
         if next_state == "idle":
             self.shadow.touch(self.clock())  # the app is about to redraw after the final commit
             owner.status("")

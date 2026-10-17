@@ -13,6 +13,11 @@ SENTENCE_ENDS = ".!?…"
 I_FORMS = {"i", "i'm", "i'll", "i've", "i'd", "i’m", "i’ll", "i’ve", "i’d"}
 
 
+def escape(text):
+    """Make text safe for one tab-separated protocol field: \\, \t and \n escaped (unescape reverses it)."""
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
 def unescape(field):
     """Undo the addon's escaping of the context field: \\\\, \\t and \\n."""
     return re.sub(r"\\(.)", lambda m: {"\\": "\\", "t": "\t", "n": "\n"}[m.group(1)], field)

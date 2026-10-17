@@ -10,13 +10,17 @@ Protocol, one message per line, fields separated by tabs (text never contains ta
     START <known> <before>
                     begin a session; <known> is 1 if the app reports the text before the cursor, which is then
                     <before> (its last 200 characters, with backslash, tab and newline escaped as \\, \t, \n)
-    STOP            end the session: one last pass trusting the recording's true end, commit the rest, DONE
+    STOP [<name> <mods> <text>]
+                    end the session: one last pass trusting the recording's true end, then commit the rest. If a
+                    key ended the dictation, its keysym name, comma-separated modifiers (shift,ctrl,alt,super) and
+                    escaped text follow, and finish.py decides what to commit
     CANCEL          end the session, dropping whatever is not committed yet, DONE
   backend -> addon
     READY                            the model is loaded (once, at startup)
     COMMIT <text>                    final text: insert it
     PREEDIT <settled> <tentative>    the uncommitted rest, shown after the committed text; replaces the last one
-    DONE                             the session is over
+    DONE <absorbed>                  the session is over; <absorbed> is 1 if the key that ended it was used up
+                                     (otherwise the front end replays it after the commit)
     ERROR <message>
 STOP and CANCEL outside a session are ignored: the session may have just ended on an error.
 """
@@ -36,6 +40,7 @@ import numpy
 
 from whistle_ime import voting
 from whistle_ime.context import fit_first_word, needs_space, unescape
+from whistle_ime.finish import EndKey, finish
 from whistle_ime.whistle import LANGUAGES, Whistle
 
 SAMPLE_RATE = 16000
@@ -70,21 +75,42 @@ class Session:
             self.recording.append(samples)
             self.unheard = True
 
-    def tick(self, closes=False):
-        """One pass over the last window, unless nothing new arrived; closes trusts the window's right edge."""
-        if self.recording.heard() > 0 and (self.unheard or closes):
-            self.transcript.add(self.recording.observe(self.hear, closes=closes))
+    def tick(self):
+        """One pass over the last window, unless nothing new arrived."""
+        if self.recording.heard() > 0 and self.unheard:
+            self.transcript.add(self.recording.observe(self.hear))
             self.unheard = False
         self.publish()
 
-    def publish(self):
-        # Transcript.frozen only ever grows at its end, so committing its new tail never revises earlier text.
+    def close(self, end_key=None):
+        """The last pass, trusting the recording's true end; commits the rest as `finish` says for the key that
+        ended the dictation. Returns whether that key was absorbed."""
+        if self.recording.heard() > 0:
+            self.transcript.add(self.recording.observe(self.hear, closes=True))
+        words = self._words()
+        rest = [text for text, _ in words[self.committed:]]
+        text, absorbed = finish(self._spaced(" ".join(rest)) if rest else "", end_key)
+        if text:
+            self.emit("COMMIT", text)
+            self.needs_space = True
+        self.committed = len(words)
+        if self.preedit != ("", ""):
+            self.emit("PREEDIT", "", "")
+            self.preedit = ("", "")
+        return absorbed
+
+    def _words(self):
         # The first word is fitted to the text before the cursor; that depends only on its own text, so the
         # preview shows exactly what will be committed.
-        frozen = len(self.transcript.frozen)
         words = self.transcript.words()
         if words:
             words[0] = (fit_first_word(words[0][0], self.before, self.keywords), words[0][1])
+        return words
+
+    def publish(self):
+        # Transcript.frozen only ever grows at its end, so committing its new tail never revises earlier text.
+        frozen = len(self.transcript.frozen)
+        words = self._words()
         new = [text for text, _ in words[self.committed:frozen]]
         if new:
             self.emit("COMMIT", self._spaced(" ".join(new)))
@@ -142,12 +168,22 @@ class PwRecorder:
 TICK = object()
 
 
+def parse_end_key(fields):
+    """The key in a STOP command's fields, or None for a plain STOP."""
+    if not fields:
+        return None
+    assert len(fields) == 3, fields
+    name, mods, text = fields
+    return EndKey(name, unescape(text), frozenset(m for m in mods.split(",") if m))
+
+
 def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL_SECONDS, clock=time.monotonic,
                 keywords=()):
     """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF)."""
     session = Session(hear, before, emit, keywords)
     next_tick = clock() + interval
     keep_serving = True
+    absorbed = False
     try:
         while True:
             try:
@@ -158,15 +194,16 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
                 session.append(recorder.take())
                 session.tick()
                 next_tick = max(next_tick + interval, clock())  # fell behind: skip ticks rather than burst
-            elif command == "STOP":
-                recorder.stop()
-                session.append(recorder.take())
-                session.tick(closes=True)
-                break
-            elif command == "CANCEL":
-                break
             elif command is None:
                 keep_serving = False
+                break
+            elif command.split("\t")[0] == "STOP":
+                end_key = parse_end_key(command.split("\t")[1:])
+                recorder.stop()
+                session.append(recorder.take())
+                absorbed = session.close(end_key)
+                break
+            elif command == "CANCEL":
                 break
             else:
                 emit("ERROR", f"unexpected {command!r} during a session")
@@ -175,7 +212,7 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
         emit("ERROR", f"{type(error).__name__}: {error}".replace("\t", " ").replace("\n", " "))
     finally:
         recorder.stop()
-    emit("DONE")
+    emit("DONE", "1" if absorbed else "0")
     return keep_serving
 
 
@@ -192,11 +229,11 @@ def serve(hear, commands, emit, record=PwRecorder, interval=voting.INTERVAL_SECO
                 recorder = record()
             except OSError as error:
                 emit("ERROR", f"cannot record: {error}")
-                emit("DONE")
+                emit("DONE", "0")
                 continue
             if not run_session(hear, before, commands, emit, recorder, interval, clock, keywords):
                 return
-        elif kind not in ("STOP", "CANCEL"):
+        elif kind not in ("STOP", "CANCEL"):  # a late STOP or CANCEL: the session already ended
             emit("ERROR", f"unexpected {command!r} outside a session")
 
 

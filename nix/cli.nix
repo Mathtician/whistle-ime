@@ -1,17 +1,19 @@
-# whistle-ime: the command a desktop shortcut runs. It asks the addon, over fcitx5's D-Bus connection, to
-# start dictating into the focused text field or to stop.
+# whistle-ime: control dictation from scripts or a desktop shortcut, as an alternative to the trigger key.
+# `whistle-ime toggle` asks the addon, over fcitx5's D-Bus connection, to start dictating into the focused
+# text field or to stop.
 { writeShellApplication, dbus }:
 writeShellApplication {
   name = "whistle-ime";
   runtimeInputs = [ dbus ];
   text = ''
-    usage="usage: whistle-ime [toggle]
+    usage="usage: whistle-ime toggle
 
-    Start dictating into the focused text field, or stop. Bind this to a shortcut in your desktop's settings.
-    While dictating, Escape also stops, and typing stops and then types after the dictated text."
+    Start dictating into the focused text field, or stop: the same as pressing the trigger key (Super+Alt+V
+    by default), for scripts or a desktop shortcut. While dictating, Escape also stops, and typing stops and
+    then types after the dictated text."
     case "$*" in
-      "" | toggle) ;;
-      -h | --help) echo "$usage"; exit 0 ;;
+      toggle) ;;
+      "" | -h | --help) echo "$usage"; exit 0 ;;
       *) echo "$usage" >&2; exit 2 ;;
     esac
     if ! reply=$(dbus-send --session --print-reply=literal --dest=org.fcitx.Fcitx5 /whistle_ime \

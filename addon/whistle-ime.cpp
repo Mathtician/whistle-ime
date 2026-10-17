@@ -2,16 +2,18 @@
  * whistle-ime: dictation into the focused text field, with a live preview.
  *
  * The addon is thin. It keeps one backend process running (the speech model stays loaded), turns the
- * D-Bus method Toggle (`whistle-ime toggle`, bound to a desktop shortcut) into START/STOP, shows the
+ * trigger key (or the D-Bus method Toggle, which `whistle-ime toggle` calls) into START/STOP, shows the
  * backend's PREEDIT as inline preedit and inserts its COMMITs.
  * The backend owns every decision about text, including spacing; see src/whistle_ime/backend.py for the
  * protocol. Structure and several hard-won details follow fcitx5-voiceinput (MIT,
  * github.com/GavinLiuOnline/fcitx5-voiceinput).
  *
  * Session states:
- *   Idle -> Recording        Toggle, into the focused text field
- *   Recording -> Finishing   Toggle or Escape (STOP); any other key also STOPs, and is replayed after
- *                            the final commit so it lands after the dictated text
+ *   Idle -> Recording        trigger key or Toggle, into the focused text field
+ *   Recording -> Finishing   trigger key, Toggle or Escape (STOP); any other key also STOPs, carrying the
+ *                            key, and the backend decides from it what to commit (finish.py); a key it
+ *                            did not absorb is replayed after the final commit, so it lands after the
+ *                            dictated text
  *   Recording/Finishing -> Cancelling
  *                            focus left the field (CANCEL); its preedit is gone and it can no longer
  *                            receive commits, so everything until DONE is dropped
@@ -26,9 +28,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <set>
+#include <sstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,6 +74,9 @@ FCITX_DEFINE_LOG_CATEGORY(whistle_ime, "whistle-ime");
 
 FCITX_CONFIGURATION(
     WhistleImeConfig,
+    // KWin checks its global shortcuts before an input method sees a key, so a chord KWin also uses never
+    // arrives here; the addon warns at startup if kglobalshortcutsrc has it.
+    KeyListOption triggerKey{this, "TriggerKey", "Trigger Key", {Key("Super+Alt+V")}, KeyListConstrain()};
     // Run with /bin/sh -c; it must speak the protocol on stdin/stdout.
     Option<std::string> backend{this, "Backend", "Backend Command", ""};
     // Logs what the app reports about the field (including the text around the cursor) at START and DONE.
@@ -73,8 +84,8 @@ FCITX_CONFIGURATION(
 
 class WhistleIme;
 
-// org.fcitx.Fcitx.WhistleIme1 at /whistle_ime on fcitx5's bus: what `whistle-ime toggle` calls. The
-// shortcut lives in the desktop's settings, where the user sees it next to their others.
+// org.fcitx.Fcitx.WhistleIme1 at /whistle_ime on fcitx5's bus: what `whistle-ime toggle` calls, for
+// scripts or a desktop shortcut as an alternative to the trigger key.
 class WhistleImeDBus : public dbus::ObjectVTable<WhistleImeDBus> {
 public:
     explicit WhistleImeDBus(WhistleIme *parent) : parent_(parent) {}
@@ -92,6 +103,7 @@ class WhistleIme final : public AddonInstance {
 public:
     explicit WhistleIme(Instance *instance) : instance_(instance) {
         readAsIni(config_, "conf/whistle-ime.conf");
+        warnAboutKWinCollisions();
         spawnBackend();
         if (auto *bus = dbus() ? dbus()->call<IDBusModule::bus>() : nullptr) {
             bus->addObjectVTable("/whistle_ime", "org.fcitx.Fcitx.WhistleIme1", dbusObject_);
@@ -146,7 +158,7 @@ public:
             return start(ic);
         }
         case State::Recording:
-            stop();
+            stop(nullptr);
             return "stopping";
         case State::Finishing:
             return "already stopping";
@@ -162,34 +174,108 @@ private:
     // ---- keys -------------------------------------------------------------------------------------
 
     void onKey(KeyEvent &event) {
+        const Key &key = event.key();
+        const bool trigger = key.checkKeyList(config_.triggerKey.value());
         if (event.isRelease()) {
+            if (trigger) {
+                event.filterAndAccept();  // its press was ours, so its release is too
+            }
             return;
         }
-        const Key &key = event.key();
         switch (state_) {
         case State::Idle:
-            follow(event.inputContext(), key);  // the key goes on to the app
+            if (trigger) {
+                start(event.inputContext());
+                event.filterAndAccept();
+            } else {
+                follow(event.inputContext(), key);  // the key goes on to the app
+            }
             return;
         case State::Recording:
-            if (key.check(FcitxKey_Escape)) {
-                stop();
+            if (trigger || key.check(FcitxKey_Escape)) {
+                stop(nullptr);
                 event.filterAndAccept();
             } else if (!key.isModifier()) {
-                // Stop, then type: the key is replayed once the dictated text is in.
+                // The key ends the dictation; the backend decides from it what to commit, and unless it
+                // absorbs the key, it is replayed after the final commit.
                 held_.push_back(key);
-                stop();
+                stop(&key);
                 event.filterAndAccept();
             }
             return;
         case State::Finishing:
-            if (!key.isModifier() && !key.check(FcitxKey_Escape)) {
+            if (!key.isModifier() && !trigger && !key.check(FcitxKey_Escape)) {
                 held_.push_back(key);
             }
             event.filterAndAccept();
             return;
         case State::Cancelling:
-            return;  // the field already lost focus; this key belongs to wherever focus went
+            if (trigger) {
+                event.filterAndAccept();  // too soon to start again; don't leak the chord to the app
+            }
+            return;  // other keys belong to wherever focus went
         }
+    }
+
+    // Warn if KWin has a global shortcut on our trigger: KWin would take the key before fcitx5 sees it.
+    void warnAboutKWinCollisions() const {
+        const char *home = std::getenv("HOME");
+        const char *xdg = std::getenv("XDG_CONFIG_HOME");
+        const std::string path = (xdg && *xdg ? std::string(xdg) : std::string(home ? home : "") + "/.config") +
+                                 "/kglobalshortcutsrc";
+        std::ifstream file(path);
+        std::string line;
+        std::string group;
+        while (std::getline(file, line)) {
+            if (!line.empty() && line.front() == '[') {
+                group = line;
+                continue;
+            }
+            const auto eq = line.find('=');
+            if (eq == std::string::npos || line.compare(0, 1, "_") == 0) {
+                continue;
+            }
+            // name=active shortcuts (tab-separated),default,description
+            const std::string active = line.substr(eq + 1, line.find(',', eq) - eq - 1);
+            std::stringstream shortcuts(active);
+            for (std::string shortcut; std::getline(shortcuts, shortcut, '\t');) {
+                for (const auto &trigger : config_.triggerKey.value()) {
+                    if (sameChord(shortcut, trigger)) {
+                        WHISTLE_INFO() << "KWin's shortcut " << group << " " << line.substr(0, eq) << " uses "
+                                       << shortcut << ", the dictation trigger; KWin will take that key first";
+                    }
+                }
+            }
+        }
+    }
+
+    // A KDE shortcut ("Meta+Alt+V") and an fcitx5 key name the same chord.
+    static bool sameChord(const std::string &kde, const Key &key) {
+        std::set<std::string> mods;
+        std::string name;
+        std::stringstream parts(kde);
+        for (std::string part; std::getline(parts, part, '+');) {
+            std::string lower(part);
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+            if (lower == "meta" || lower == "super") {
+                mods.insert("super");
+            } else if (lower == "ctrl" || lower == "control") {
+                mods.insert("ctrl");
+            } else if (lower == "alt" || lower == "shift") {
+                mods.insert(lower);
+            } else {
+                name = lower;
+            }
+        }
+        std::set<std::string> want;
+        const auto states = key.states();
+        if (states.test(KeyState::Super)) want.insert("super");
+        if (states.test(KeyState::Ctrl)) want.insert("ctrl");
+        if (states.test(KeyState::Alt)) want.insert("alt");
+        if (states.test(KeyState::Shift)) want.insert("shift");
+        std::string keyName = Key::keySymToString(key.sym());
+        std::transform(keyName.begin(), keyName.end(), keyName.begin(), [](unsigned char c) { return std::tolower(c); });
+        return !name.empty() && name == keyName && mods == want;
     }
 
     std::string start(InputContext *ic) {
@@ -220,9 +306,24 @@ private:
         return "started";
     }
 
-    void stop() {
+    // STOP, with the key that ended the dictation if there was one: keysym name, modifiers, escaped text.
+    void stop(const Key *key) {
         state_ = State::Finishing;
-        send("STOP");
+        if (!key) {
+            send("STOP");
+        } else {
+            std::string mods;
+            const auto add = [&](KeyState state, const char *name) {
+                if (key->states().test(state)) {
+                    mods += mods.empty() ? name : std::string(",") + name;
+                }
+            };
+            add(KeyState::Shift, "shift");
+            add(KeyState::Ctrl, "ctrl");
+            add(KeyState::Alt, "alt");
+            add(KeyState::Super, "super");
+            send("STOP\t" + Key::keySymToString(key->sym()) + "\t" + mods + "\t" + escape(typedText(*key)));
+        }
         showStatus(findIc(), "Finishing…");
     }
 
@@ -324,7 +425,7 @@ private:
             shadow_.touch(Shadow::Clock::now());
         } else if (kind == "DONE") {
             logContext(findIc(), "DONE");
-            endSession(State::Idle);
+            endSession(State::Idle, fields.size() > 1 && fields[1] == "1");
         } else {
             WHISTLE_INFO() << "unexpected backend line: " << line;
         }
@@ -348,7 +449,9 @@ private:
     }
 
     // Leave the session: clear the preedit, restore the field's capabilities and replay held keys.
-    void endSession(State next) {
+    // Leave the session: clear the preedit, restore the field's capabilities and replay held keys (all but
+    // the one that ended the dictation, if the backend absorbed it).
+    void endSession(State next, bool absorbed = false) {
         auto *ic = findIc();
         if (ic) {
             ic->inputPanel().setClientPreedit(Text());
@@ -359,8 +462,11 @@ private:
                 ic->updateUserInterface(UserInterfaceComponent::InputPanel);
             }
         }
-        const auto held = std::move(held_);
+        auto held = std::move(held_);
         held_.clear();
+        if (absorbed && !held.empty()) {
+            held.erase(held.begin());
+        }
         state_ = next;
         if (next == State::Idle && ic) {
             shadow_.touch(Shadow::Clock::now());  // the app is about to redraw after the final commit

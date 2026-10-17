@@ -9,6 +9,7 @@ before running its own shortcuts.
 from __future__ import annotations
 
 import argparse
+import configparser
 import logging
 import os
 import queue
@@ -21,6 +22,8 @@ gi.require_version("IBus", "1.0")
 from gi.repository import GLib, GObject, IBus  # noqa: E402
 
 from whistle_ime import backend, voting  # noqa: E402
+from whistle_ime.collisions import gnome_collisions  # noqa: E402
+from whistle_ime.context import escape  # noqa: E402
 from whistle_ime.frontend import Frontend, Key, Trigger  # noqa: E402
 from whistle_ime.whistle import LANGUAGES, Whistle  # noqa: E402
 
@@ -86,9 +89,14 @@ class ThreadBackend:
         FRONTEND.on_backend(*fields)
         return False  # run once
 
-    def stop(self):
-        if self.commands is not None:
+    def stop(self, end_key):
+        if self.commands is None:
+            return
+        if end_key is None:
             self.commands.put("STOP")
+        else:
+            mods = ",".join(sorted(end_key.mods))
+            self.commands.put(f"STOP\t{end_key.name}\t{mods}\t{escape(end_key.text)}")
 
     def cancel(self):
         if self.commands is not None:
@@ -175,6 +183,48 @@ class WhistleEngine(IBus.Engine):
             self.hide_auxiliary_text()
 
 
+GNOME_SHORTCUT_SCHEMAS = ("org.gnome.desktop.wm.keybindings", "org.gnome.shell.keybindings",
+                          "org.gnome.mutter.keybindings", "org.gnome.mutter.wayland.keybindings",
+                          "org.gnome.settings-daemon.plugins.media-keys")
+CUSTOM_SHORTCUT_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
+
+
+def gnome_bindings():
+    """{(schema, key): [accelerators]} for GNOME's shortcut settings, including the user's custom shortcuts."""
+    from gi.repository import Gio
+
+    source = Gio.SettingsSchemaSource.get_default()
+    bindings = {}
+    for schema_id in GNOME_SHORTCUT_SCHEMAS:
+        schema = source.lookup(schema_id, True) if source else None
+        if schema is None:
+            continue
+        settings = Gio.Settings.new(schema_id)
+        for key in schema.list_keys():
+            value = settings.get_value(key)
+            if value.get_type_string() == "as":
+                bindings[(schema_id, key)] = list(value.unpack())
+            elif value.get_type_string() == "s":
+                bindings[(schema_id, key)] = [value.unpack()]
+        if schema_id.endswith("media-keys") and schema.has_key("custom-keybindings"):
+            for path in settings.get_strv("custom-keybindings"):
+                custom = Gio.Settings.new_with_path(CUSTOM_SHORTCUT_SCHEMA, path)
+                bindings[("custom shortcut", custom.get_string("name"))] = [custom.get_string("binding")]
+    return bindings
+
+
+def read_settings(args, config_dir):
+    """The user's ~/.config/whistle-ime/settings.ini, section [whistle-ime], over the component's arguments."""
+    parser = configparser.ConfigParser()
+    parser.read(config_dir / "settings.ini")
+    section = parser["whistle-ime"] if parser.has_section("whistle-ime") else {}
+    language = section.get("language", args.language or "") or None
+    if language is not None and language not in LANGUAGES:
+        log.warning("settings.ini: unknown language %r; detecting it instead", language)
+        language = None
+    return section.get("trigger", args.trigger), language, section.get("keywords", args.keywords)
+
+
 def main():
     parser = argparse.ArgumentParser(description="whistle-ime IBus engine")
     parser.add_argument("--ibus", action="store_true", help="started by ibus-daemon")
@@ -188,16 +238,25 @@ def main():
     debug = os.environ.get("WHISTLE_IME_DEBUG") == "1"  # logs every key (names only, no text) and state change
     logging.basicConfig(filename=logdir / "engine.log", level=logging.DEBUG if debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    log.info("starting: language=%s trigger=%s", args.language, args.trigger)
+    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "whistle-ime"
+    trigger_spec, language, keyword_spec = read_settings(args, config_dir)
+    trigger = Trigger.parse(trigger_spec)
+    log.info("starting: language=%s trigger=%s", language, trigger_spec)
+    try:
+        for schema, key in gnome_collisions(trigger, gnome_bindings()):
+            log.warning("GNOME's shortcut %s %s also uses %s; dictation takes that key first, so the GNOME "
+                        "shortcut will not work while Whistle is the input source", schema, key, trigger_spec)
+    except Exception:  # noqa: BLE001 - the check is advisory; never let it stop the engine
+        log.exception("could not check GNOME's shortcuts")
 
-    keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
+    keywords = [k.strip() for k in keyword_spec.split(",") if k.strip()]
     whistle = Whistle()
 
     def hear(samples):
-        return whistle.words(samples, args.language, keywords)
+        return whistle.words(samples, language, keywords)
 
     global FRONTEND
-    FRONTEND = Frontend(ThreadBackend(hear, keywords, voting.INTERVAL_SECONDS), Trigger.parse(args.trigger))
+    FRONTEND = Frontend(ThreadBackend(hear, keywords, voting.INTERVAL_SECONDS), trigger)
 
     IBus.init()
     bus = IBus.Bus()
