@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- IBus component for whistle-ime. The engine's layout is "default": GNOME keeps whatever keyboard layout
+     was active before switching to it, so typing stays in the user's own layout while dictation is available. -->
+<component>
+  <name>org.freedesktop.IBus.Whistle</name>
+  <description>Whistle dictation</description>
+  <exec>@EXEC@</exec>
+  <version>0.1.0</version>
+  <author>Mathtician</author>
+  <license>MIT</license>
+  <homepage>https://github.com/Mathtician/whistle-ime</homepage>
+  <textdomain>whistle-ime</textdomain>
+  <engines>
+    <engine>
+      <name>whistle</name>
+      <language>en</language>
+      <license>MIT</license>
+      <author>Mathtician</author>
+      <icon>audio-input-microphone</icon>
+      <layout>default</layout>
+      <longname>Whistle dictation</longname>
+      <description>Types with your keyboard layout; Super+Alt+V starts and stops dictation</description>
+      <rank>0</rank>
+      <symbol>🎙</symbol>
+    </engine>
+  </engines>
+</component>
