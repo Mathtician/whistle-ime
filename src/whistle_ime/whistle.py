@@ -55,13 +55,15 @@ class Whistle:
     def _error(self):
         return self.lib.needle_last_error().decode("utf-8", "replace")
 
-    def words(self, samples, language=None, keywords=()):
-        """[(word, end seconds into samples, probability)] for 16 kHz mono float samples in [-1, 1]."""
+    def transcribe(self, samples, language=None, keywords=()):
+        """The engine's own result for 16 kHz mono float samples in [-1, 1]: {"text", "language", "ttft_ms",
+        "decode_tps", "words": [{"word", "start", "end", "probability"}]}, times in seconds into the samples.
+        Times are whole 80 ms frames, and words tile the samples: each starts where the one before ends."""
         samples = numpy.ascontiguousarray(samples, numpy.float32)
         assert samples.ndim == 1 and len(samples) <= LIMIT_SECONDS * SAMPLE_RATE, samples.shape
         assert language is None or language in LANGUAGES, language
         if len(samples) == 0:
-            return []
+            return {"text": "", "words": []}
         code = self.lib.needle_transcribe(
             samples.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(samples),
             language.encode("utf-8") if language else None,
@@ -69,6 +71,10 @@ class Whistle:
             1, self.buffer, len(self.buffer))
         if code < 0:
             raise RuntimeError(self._error())
-        result = json.loads(self.buffer.value.decode("utf-8", "replace"))
+        return json.loads(self.buffer.value.decode("utf-8", "replace"))
+
+    def words(self, samples, language=None, keywords=()):
+        """[(word, end seconds into samples, probability)] for 16 kHz mono float samples in [-1, 1]."""
+        result = self.transcribe(samples, language, keywords)
         words = [(without_quotes(w["word"]) or "", w["end"], w["probability"]) for w in result.get("words", [])]
         return [(text, end, probability) for text, end, probability in words if text]
