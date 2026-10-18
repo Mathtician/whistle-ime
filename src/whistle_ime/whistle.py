@@ -21,13 +21,9 @@ QUOTES = '"“”„«»'
 
 
 def without_quotes(word):
-    """The word without quotation marks, or None when one closes it. The engine times a word by its last token,
-    and a closing quote's time can be a second or more late ('much."' at 3.12 s where every other pass said
-    2.12 s), so the word would vote in the wrong place; the passes around it place it right."""
-    word = word.strip()
-    if word and word[-1] in QUOTES:
-        return None
-    return word.translate(str.maketrans("", "", QUOTES))
+    """The word without quotation marks. (A closing quote's time can be a second late, 'much."' ending at 3.12 s
+    where other readings said 2.12 s; segments.py matches words by overlapping time, which a late end keeps.)"""
+    return word.strip().translate(str.maketrans("", "", QUOTES))
 
 
 class Whistle:
@@ -77,6 +73,6 @@ class Whistle:
         """[(word, start, end, probability)], times in seconds into the samples, for 16 kHz mono float samples
         in [-1, 1]. Quotation marks are dropped (see without_quotes)."""
         result = self.transcribe(samples, language, keywords)
-        words = [(without_quotes(w["word"]) or "", w["start"], w["end"], w["probability"])
+        words = [(without_quotes(w["word"]), w["start"], w["end"], w["probability"])
                  for w in result.get("words", [])]
         return [word for word in words if word[0]]
