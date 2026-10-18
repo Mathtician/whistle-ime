@@ -3,7 +3,7 @@ import queue
 import numpy
 import pytest
 
-from whistle_ime import voting as live
+from whistle_ime import segments
 from whistle_ime import backend
 
 SPOKEN = [("And", 0.72), ("so,", 0.96), ("my", 1.28), ("fellow", 1.68), ("Americans,", 2.24), ("ask", 3.84),
@@ -13,19 +13,25 @@ FULL = " ".join(text for text, _ in SPOKEN)
 
 
 def fake_model(samples):
-    """Hears SPOKEN, garbling the word at a window's right edge the way the real models do.
+    """Hears SPOKEN, missing a word ending at the window's left cut and garbling one at its right cut, the way
+    the real models do. Like Whistle's, its words tile the window: each starts where the one before ends.
 
     The samples are the recording's own clock (sample i holds i / 16000), so a window knows where it starts.
     """
     start, end = float(samples[0]), float(samples[-1]) + 1 / 16000
-    return [("calling" if end - t < 0.3 else text, t - start, 0.95 if end - t < 0.3 else 0.9)
-            for text, t in SPOKEN if start + 0.2 < t <= end]
+    words, previous = [], 0.0
+    for text, t in SPOKEN:
+        if start + 0.2 < t <= end:
+            garbled = end - t < 0.3
+            words.append(("calling" if garbled else text, previous, t - start, 0.95 if garbled else 0.9))
+            previous = t - start
+    return words
 
 
 class FakeRecorder:
     """A microphone hearing `seconds` of the recording clock, interval seconds per take()."""
 
-    def __init__(self, seconds, interval=live.INTERVAL_SECONDS):
+    def __init__(self, seconds, interval=segments.INTERVAL_SECONDS):
         self.clock = numpy.arange(int(seconds * 16000), dtype=numpy.float64) / 16000
         self.step = int(round(interval * 16000))
         self.position = 0
@@ -72,7 +78,7 @@ class Out:
 
 def run(seconds, *commands, before=None, keywords=()):
     out = Out()
-    keep = backend.run_session(fake_model, before, Script(int(round(seconds / live.INTERVAL_SECONDS)), *commands),
+    keep = backend.run_session(fake_model, before, Script(int(round(seconds / segments.INTERVAL_SECONDS)), *commands),
                                out, FakeRecorder(seconds), clock=lambda: 0.0, keywords=keywords)
     return out, keep
 
@@ -84,10 +90,11 @@ def test_stop_commits_the_whole_transcript_and_commits_only_ever_append():
     assert out.messages[-2] == ("PREEDIT", "", "")
 
 
-def test_words_are_committed_during_the_session_once_no_window_can_reach_them():
+def test_words_are_committed_during_the_session_once_the_next_segment_is_full():
     out, _ = run(8.0, "CANCEL")
     before_stop = "".join(out.commits())
-    assert before_stop.startswith("And so, my fellow Americans,")  # spoken by 2.24 s, final by ~7.6 s
+    # segments [0, 5) and [2.5, 7.5) are stitched near 3.75 s, at "ask" (3.84 s), once the second is full
+    assert before_stop == "And so, my fellow Americans, ask"
     assert FULL.startswith(before_stop) and before_stop != FULL
 
 
@@ -98,7 +105,7 @@ def test_committed_text_plus_preedit_always_reads_as_the_current_transcript():
     def watch(*fields):
         out(*fields)
         if fields[0] == "PREEDIT":
-            shown.append("".join(out.commits()) + fields[1] + (" " if fields[1] and fields[2] else "") + fields[2])
+            shown.append("".join(out.commits()) + fields[1] + fields[2])  # as the front ends show it
 
     backend.run_session(fake_model, None, Script(80, "STOP"), watch, FakeRecorder(8.0), clock=lambda: 0.0)
     assert shown[-1] == FULL  # once everything is committed the preedit is empty
@@ -232,9 +239,11 @@ def test_sessions_are_saved_only_while_switched_on(tmp_path, monkeypatch):
     assert [p.suffix for p in saved] == [".json", ".wav"]
     record = json.loads(saved[0].read_text())
     assert record["before"] == {"chars": len("Secret text, ")}  # never the text itself
-    assert record["seconds"] == 3.0 and record["passes"] and record["passes"][-1]["end"] == 3.0
+    assert record["format"] == 2 and record["seconds"] == 3.0 and record["stop"] == []
+    assert record["ticks"] == [1600 * (i + 1) for i in range(30)]
+    assert record["passes"][-1]["start_sample"] == 0 and record["passes"][-1]["end_sample"] == 3 * 16000
+    assert record["passes"][-1]["words"][0] == ["And", 0.0, 0.72, 0.9]  # times in the recording
     assert any(e[1] == "COMMIT" for e in record["events"]) and record["events"][-1][1:] == ["DONE", "0"]
-    assert record["passes"][-1]["end_sample"] == 3 * 16000 and record["stop"] == []
     with wave.open(str(saved[1])) as w:
         assert w.getframerate() == 16000 and w.getnframes() == 3 * 16000
 
@@ -247,10 +256,10 @@ def test_two_sessions_within_one_second_keep_separate_files(tmp_path):
     assert len(list(tmp_path.iterdir())) == 4
 
 
-def test_a_word_after_a_sentence_end_is_capitalized_whatever_its_slot_chose():
-    def model(samples):  # the period won in one slot, the lowercase in the next
-        return [("Done", 0.4, 0.9), ("now.", 0.8, 0.9), ("can", 1.2, 0.9), ("you", 1.4, 0.9), ("e.g.", 1.8, 0.9),
-                ("see", 2.1, 0.9)]
+def test_a_word_after_a_sentence_end_is_capitalized_whatever_the_model_wrote():
+    def model(samples):
+        return [("Done", 0.0, 0.4, 0.9), ("now.", 0.4, 0.8, 0.9), ("can", 0.8, 1.2, 0.9), ("you", 1.2, 1.4, 0.9),
+                ("e.g.", 1.4, 1.8, 0.9), ("see", 1.8, 2.1, 0.9)]
 
     out = Out()
     session = backend.Session(model, None, out)

@@ -74,7 +74,9 @@ class Whistle:
         return json.loads(self.buffer.value.decode("utf-8", "replace"))
 
     def words(self, samples, language=None, keywords=()):
-        """[(word, end seconds into samples, probability)] for 16 kHz mono float samples in [-1, 1]."""
+        """[(word, start, end, probability)], times in seconds into the samples, for 16 kHz mono float samples
+        in [-1, 1]. Quotation marks are dropped (see without_quotes)."""
         result = self.transcribe(samples, language, keywords)
-        words = [(without_quotes(w["word"]) or "", w["end"], w["probability"]) for w in result.get("words", [])]
-        return [(text, end, probability) for text, end, probability in words if text]
+        words = [(without_quotes(w["word"]) or "", w["start"], w["end"], w["probability"])
+                 for w in result.get("words", [])]
+        return [word for word in words if word[0]]

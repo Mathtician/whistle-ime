@@ -1,9 +1,9 @@
 """Dictation backend for the whistle-ime fcitx5 addon: speech in, preedit and commits out.
 
 The addon starts this process once and keeps it running, so the model stays loaded. During a session it
-transcribes the last 5 s every 0.1 s with Whistle and votes across the windows (voting.py). A word is committed
-the moment no future window can reach it, which is about 5.3 s after it was spoken; everything after that
-is shown as preedit and may still change.
+reads the open 5 s segment every 0.1 s with Whistle and stitches overlapping segments (segments.py). A word
+is committed once the segment after the one it was taken from is complete, 3.75 to 6.25 s after it was spoken;
+everything after that is shown as preedit and may still change.
 
 Protocol, one message per line, fields separated by tabs (text never contains tabs or newlines):
   addon -> backend
@@ -27,7 +27,6 @@ STOP and CANCEL outside a session are ignored: the session may have just ended o
 from __future__ import annotations
 
 import argparse
-import itertools
 import os
 import queue
 import subprocess
@@ -38,7 +37,7 @@ import traceback
 
 import numpy
 
-from whistle_ime import recordings, voting
+from whistle_ime import recordings, segments
 from whistle_ime.context import capitalize, fit_first_word, needs_space, starts_sentence, unescape
 from whistle_ime.finish import EndKey, finish
 from whistle_ime.whistle import LANGUAGES, Whistle
@@ -55,38 +54,64 @@ class Session:
     """One dictation: audio in, COMMIT/PREEDIT messages out. No threads or audio devices; see run_session.
 
     before is the text before the cursor, or None when the app does not report it. It decides the leading
-    space and the first word's casing (see context.py).
+    space and the first word's casing (see context.py). on_pass(start_sample, end_sample, reading), if given,
+    sees every pass of the model (for saving sessions).
     """
 
-    def __init__(self, hear, before, emit, keywords=()):
+    def __init__(self, hear, before, emit, keywords=(), on_pass=None):
         self.hear = hear
         self.emit = emit
         self.before = before
         self.keywords = keywords
-        self.recording = voting.Recording(SAMPLE_RATE)
-        self.transcript = voting.Transcript()
+        self.on_pass = on_pass
+        self.audio = numpy.zeros(0, numpy.float32)  # the recording from sample `offset` on
+        self.offset = 0
+        self.open_start = 0  # sample where the open segment starts; audio before it is no longer needed
+        self.transcript = segments.Transcript()
         self.needs_space = before is not None and needs_space(before)  # the next text starts with a space
-        self.committed = 0  # words of transcript.frozen already committed
+        self.committed = 0  # words of transcript.final already committed
         self.preedit = ("", "")
         self.unheard = False  # audio arrived since the last pass
 
+    def heard(self):
+        """Samples recorded so far."""
+        return self.offset + len(self.audio)
+
     def append(self, samples):
         if len(samples):
-            self.recording.append(samples)
+            self.audio = numpy.concatenate([self.audio, numpy.asarray(samples, numpy.float32)])
             self.unheard = True
 
+    def _read(self, start, end):
+        assert self.offset <= start < end <= self.heard(), (self.offset, start, end, self.heard())
+        reading = segments.read(self.hear, self.audio[start - self.offset:end - self.offset], start)
+        if self.on_pass is not None:
+            self.on_pass(start, end, reading)
+        return reading
+
+    def _fill(self):
+        """Final readings of every open segment that has reached full length; each opens the next."""
+        while self.heard() - self.open_start >= segments.WINDOW:
+            self.transcript.full(self._read(self.open_start, self.open_start + segments.WINDOW))
+            self.open_start += segments.STRIDE
+            self.audio = self.audio[self.open_start - self.offset:]
+            self.offset = self.open_start
+
     def tick(self):
-        """One pass over the last window, unless nothing new arrived."""
-        if self.recording.heard() > 0 and self.unheard:
-            self.transcript.add(self.recording.observe(self.hear))
+        """Read the open segment again, unless nothing new arrived."""
+        if self.unheard:
+            self._fill()
+            if self.heard() > self.open_start:
+                self.transcript.partial(self._read(self.open_start, self.heard()))
             self.unheard = False
         self.publish()
 
     def close(self, end_key=None):
-        """The last pass, trusting the recording's true end; commits the rest as `finish` says for the key that
+        """The last reading, up to the recording's true end; commits the rest as `finish` says for the key that
         ended the dictation. Returns whether that key was absorbed."""
-        if self.recording.heard() > 0:
-            self.transcript.add(self.recording.observe(self.hear, closes=True))
+        self._fill()
+        if self.heard() > self.open_start:
+            self.transcript.close(self._read(self.open_start, self.heard()))
         words = self._words()
         rest = [text for text, _ in words[self.committed:]]
         text, absorbed = finish(self._spaced(" ".join(rest)) if rest else "", end_key)
@@ -100,11 +125,16 @@ class Session:
         return absorbed
 
     def _words(self):
-        # The first word is fitted to the text before the cursor, and a word after a sentence's end is
-        # capitalized: each slot picks its own form, so a period can win in one slot and the lowercase of the
-        # next word in another ("now. can"). Each depends only on the word itself and the one before, and
-        # committed words are a prefix that never changes, so the preview shows exactly what will be committed.
-        words = self.transcript.words()
+        """(text, settled) for every word so far: the final ones, then the preview's.
+
+        The first word is fitted to the text before the cursor, and a word after a sentence's end is
+        capitalized (segments may disagree on case: one ends "now." and the next goes on "can you"). Each
+        depends only on the word itself and the one before, and final words are a prefix that never changes,
+        so the preview shows exactly what will be committed.
+        """
+        settled, tentative = self.transcript.preview()
+        words = ([(w.text, True) for w in self.transcript.final] + [(w.text, True) for w in settled]
+                 + [(w.text, False) for w in tentative])
         if words:
             words[0] = (fit_first_word(words[0][0], self.before, self.keywords), words[0][1])
         for i in range(1, len(words)):
@@ -113,22 +143,22 @@ class Session:
         return words
 
     def publish(self):
-        # Transcript.frozen only ever grows at its end, so committing its new tail never revises earlier text.
-        frozen = len(self.transcript.frozen)
+        # transcript.final only ever grows at its end, so committing its new tail never revises earlier text.
+        final = len(self.transcript.final)
         words = self._words()
-        new = [text for text, _ in words[self.committed:frozen]]
+        new = [text for text, _ in words[self.committed:final]]
         if new:
             self.emit("COMMIT", self._spaced(" ".join(new)))
-            self.committed = frozen
+            self.committed = final
             self.needs_space = True
-        rest = words[frozen:]
-        settled = [text for text, _ in itertools.takewhile(lambda word: word[1], rest)]
-        tentative = [text for text, _ in rest[len(settled):]]
-        preedit = (" ".join(settled), " ".join(tentative))
-        if preedit[0] and self.needs_space:
-            preedit = (" " + preedit[0], preedit[1])
-        elif preedit[1] and self.needs_space:
-            preedit = (preedit[0], " " + preedit[1])
+        rest = words[final:]
+        settled = " ".join(text for text, is_settled in rest if is_settled)
+        tentative = " ".join(text for text, is_settled in rest if not is_settled)
+        if settled and tentative:
+            tentative = " " + tentative  # the front end shows the two parts back to back
+        if self.needs_space and (settled or tentative):
+            settled, tentative = (" " + settled, tentative) if settled else (settled, " " + tentative)
+        preedit = (settled, tentative)
         if preedit != self.preedit:
             self.emit("PREEDIT", *preedit)
             self.preedit = preedit
@@ -182,12 +212,12 @@ def parse_end_key(fields):
     return EndKey(name, unescape(text), frozenset(m for m in mods.split(",") if m))
 
 
-def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL_SECONDS, clock=time.monotonic,
+def run_session(hear, before, commands, emit, recorder, interval=segments.INTERVAL_SECONDS, clock=time.monotonic,
                 keywords=()):
     """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF)."""
     saving = recordings.start(before)  # None unless the user switched session saving on
     if saving is not None:
-        hear, emit = saving.wrap_hear(hear), saving.wrap_emit(emit)
+        emit = saving.wrap_emit(emit)
 
     def take():
         samples = recorder.take()
@@ -195,7 +225,7 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
             saving.add_audio(samples)
         return samples
 
-    session = Session(hear, before, emit, keywords)
+    session = Session(hear, before, emit, keywords, on_pass=saving.add_pass if saving is not None else None)
     next_tick = clock() + interval
     keep_serving = True
     absorbed = False
@@ -207,6 +237,8 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
                 command = TICK
             if command is TICK:
                 session.append(take())
+                if saving is not None:
+                    saving.tick()
                 session.tick()
                 next_tick = max(next_tick + interval, clock())  # fell behind: skip ticks rather than burst
             elif command is None:
@@ -238,7 +270,7 @@ def run_session(hear, before, commands, emit, recorder, interval=voting.INTERVAL
     return keep_serving
 
 
-def serve(hear, commands, emit, record=PwRecorder, interval=voting.INTERVAL_SECONDS, clock=time.monotonic,
+def serve(hear, commands, emit, record=PwRecorder, interval=segments.INTERVAL_SECONDS, clock=time.monotonic,
           keywords=()):
     """Answer sessions until commands end. commands yields lines without newlines, then None."""
     emit("READY")
@@ -269,7 +301,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--language", default=None, choices=LANGUAGES, help="Force the language (default: detect)")
     parser.add_argument("--keywords", default="", help="Words and phrases to favour, comma separated")
-    parser.add_argument("--interval", type=float, default=voting.INTERVAL_SECONDS, help="Seconds between passes")
+    parser.add_argument("--interval", type=float, default=segments.INTERVAL_SECONDS, help="Seconds between passes")
     args = parser.parse_args()
 
     # Only protocol messages may reach the addon: keep a private copy of stdout for them and send everything

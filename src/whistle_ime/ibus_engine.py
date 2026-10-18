@@ -21,7 +21,7 @@ import gi
 gi.require_version("IBus", "1.0")
 from gi.repository import GLib, GObject, IBus  # noqa: E402
 
-from whistle_ime import backend, voting  # noqa: E402
+from whistle_ime import backend, segments  # noqa: E402
 from whistle_ime.collisions import gnome_collisions  # noqa: E402
 from whistle_ime.context import escape  # noqa: E402
 from whistle_ime.frontend import Frontend, Key, Trigger  # noqa: E402
@@ -256,7 +256,7 @@ def main():
         return whistle.words(samples, language, keywords)
 
     global FRONTEND
-    FRONTEND = Frontend(ThreadBackend(hear, keywords, voting.INTERVAL_SECONDS), trigger)
+    FRONTEND = Frontend(ThreadBackend(hear, keywords, segments.INTERVAL_SECONDS), trigger)
 
     IBus.init()
     bus = IBus.Bus()

@@ -1,11 +1,14 @@
 """Opt-in saving of dictation sessions, for tuning against real audio (hallucinations on noise, for example).
 
 On while ~/.config/whistle-ime/save-sessions exists, checked at the start of each dictation. Each session
-writes <cache>/whistle-ime/sessions/<time>.wav (16 kHz mono) and <time>.json: every pass of the model (where
-its window lies in the recording, and the sample it ends at, so a replay can rerun it exactly; the words it
-heard, with times and probabilities), every message sent to the front end, and the STOP command's fields (the
-key that ended the dictation), null if it did not end with STOP. Of the text before the cursor only its length
-is kept.
+writes <cache>/whistle-ime/sessions/<time>.wav (16 kHz mono) and <time>.json (format 2): how many samples had
+been recorded at each tick, so a replay can rerun the session on the same timing; every pass of the model (the
+samples its window spans, and the words it heard with their times in the recording and probabilities); every
+message sent to the front end; and the STOP command's fields (the key that ended the dictation), null if it
+did not end with STOP. Of the text before the cursor only its length is kept.
+
+Format 1 logs (before the segments rewrite) have no ticks; each pass there has "start" and "end" in seconds,
+"end_sample" in later ones, and words as [text, end seconds into the window, probability].
 """
 from __future__ import annotations
 
@@ -43,6 +46,7 @@ class SessionRecording:
         self.chunks = []
         self.heard = 0  # samples so far
         self.passes = []
+        self.ticks = []  # samples recorded at each tick
         self.events = []
         self.stop = None  # the STOP command's fields
 
@@ -51,16 +55,13 @@ class SessionRecording:
             self.chunks.append(numpy.asarray(samples, numpy.float32))
             self.heard += len(samples)
 
-    def wrap_hear(self, hear):
-        def recorded(samples):
-            words = hear(samples)
-            # The window is the newest audio, so it ends where the recording so far ends.
-            end = self.heard / SAMPLE_RATE
-            self.passes.append({"start": round(end - len(samples) / SAMPLE_RATE, 3), "end": round(end, 3),
-                                "end_sample": self.heard,
-                                "words": [[w, round(e, 3), round(p, 3)] for w, e, p in words]})
-            return words
-        return recorded
+    def tick(self):
+        self.ticks.append(self.heard)
+
+    def add_pass(self, start_sample, end_sample, reading):
+        self.passes.append({"start_sample": start_sample, "end_sample": end_sample,
+                            "words": [[w.text, round(w.start, 3), round(w.end, 3), round(w.probability, 3)]
+                                      for w in reading.words]})
 
     def wrap_emit(self, emit):
         def recorded(*fields):
@@ -79,6 +80,6 @@ class SessionRecording:
             out.setframerate(SAMPLE_RATE)
             out.writeframes((numpy.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
         stem.with_suffix(".json").write_text(json.dumps(
-            {"seconds": round(len(audio) / SAMPLE_RATE, 3), "before": self.before, "passes": self.passes,
-             "events": self.events, "stop": self.stop}, indent=1))
+            {"format": 2, "seconds": round(len(audio) / SAMPLE_RATE, 3), "before": self.before, "ticks": self.ticks,
+             "passes": self.passes, "events": self.events, "stop": self.stop}, indent=1))
         return stem
