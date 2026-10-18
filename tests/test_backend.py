@@ -266,3 +266,53 @@ def test_a_word_after_a_sentence_end_is_capitalized_whatever_the_model_wrote():
     session.append(numpy.zeros(3 * 16000, numpy.float32))
     session.close()
     assert out.commits() == ["Done now. Can you e.g. see"]
+
+
+class Steps:
+    """The command queue as a list: an int is that many ticks, a string a command."""
+
+    def __init__(self, *steps):
+        self.steps = list(steps)
+
+    def get(self, timeout=None):
+        if self.steps and isinstance(self.steps[0], int):
+            if self.steps[0] == 0:
+                self.steps.pop(0)
+                return self.get(timeout)
+            if timeout is None:  # waiting for a command: ticks cannot happen
+                raise AssertionError("ticks scripted where the backend waits for a command")
+            self.steps[0] -= 1
+            raise queue.Empty
+        return self.steps.pop(0) if self.steps else None
+
+
+def test_with_continuing_punctuation_a_typed_comma_commits_and_dictation_goes_on():
+    out = Out()
+    heard = []
+
+    def model(samples):
+        heard.append(float(samples[0]))  # the recording clock: where each window starts
+        return fake_model(samples)
+
+    keep = backend.run_session(model, None, Steps(30, "STOP\tcomma\t\t,", "CONTINUE\t1\tAnd so, my fellow Americans,",
+                                                  30, "STOP"),
+                               out, FakeRecorder(8.0), clock=lambda: 0.0, continues=True)
+    assert keep
+    assert out.commits() == ["And so, my fellow Americans,", " ask not what your country can do for you."]
+    assert [m for m in out.messages if m[0] in ("NEXT", "DONE")] == [("NEXT", "1"), ("DONE", "0")]
+    # 30 ticks and the take at STOP hand the first piece 3.1 s; the second piece's windows start there
+    second = [start for start in heard if start > 0.0]
+    assert second and min(second) == pytest.approx(3.1, abs=1e-6)
+
+
+def test_without_continuing_punctuation_a_typed_comma_ends_the_session():
+    out = Out()
+    backend.run_session(fake_model, None, Steps(30, "STOP\tcomma\t\t,"), out, FakeRecorder(8.0), clock=lambda: 0.0)
+    assert [m for m in out.messages if m[0] in ("NEXT", "DONE")] == [("DONE", "1")]
+
+
+def test_cancel_after_next_ends_the_session():
+    out = Out()
+    keep = backend.run_session(fake_model, None, Steps(30, "STOP\tperiod\t\t.", "CANCEL"), out, FakeRecorder(8.0),
+                               clock=lambda: 0.0, continues=True)
+    assert keep and [m for m in out.messages if m[0] in ("NEXT", "DONE")] == [("NEXT", "1"), ("DONE", "0")]

@@ -25,6 +25,7 @@ services.whistle-ime = {
   language = "en";            # en de fr es it nl pl, or null to detect
   keywords = [ "Siobhan" ];   # favoured words; they also keep their capital
   trigger = "Super+Alt+V";    # fcitx5's notation
+  continueAfterPunctuation = false;  # true: typed punctuation and Backspace don't stop dictation
 };
 ```
 
@@ -77,8 +78,12 @@ Ctrl+Alt+D to Show Desktop.
   | Ctrl+Backspace | committed without its last word |
   | anything else | committed, then the key is typed after it |
 
+  With `continueAfterPunctuation`, punctuation, Backspace and Ctrl+Backspace do the same and dictation goes
+  on, so you can speak and punctuate as you go; what you say next is heard from the key on.
+
 - **Focus leaving the field** discards whatever is still provisional; committed text stays.
-- Text becomes final about 5 s after you say it; until then it is preedit and may change.
+- Dictations under 5 s are committed when you stop; in longer ones, text becomes final 4 to 6 s after you
+  say it. Until then it is preedit and may change.
 - The first word is fitted to the text before the cursor: capitalized at the start of a field or sentence,
   lowercased mid-sentence, with a space added where needed. Apps that don't report that text (terminals;
   Konsole stopped on purpose in [konsole!800](https://invent.kde.org/utilities/konsole/-/merge_requests/800))
@@ -93,13 +98,14 @@ maps the trigger key (or the D-Bus method `Toggle`, `org.fcitx.Fcitx.WhistleIme1
 (`src/whistle_ime/ibus_engine.py`) does the same over `frontend.py`, with the backend in a thread of its own
 process.
 
-The backend (`src/whistle_ime/`, Python) records with `pw-record` and, every 0.1 s, transcribes the last 5 s
-again. Every word is heard by dozens of overlapping windows, and the windows vote: each window's words are
-aligned to the running transcript by their end times (consistent across windows to about 80 ms), votes are
-weighted by confidence and by distance from the window's cuts (where the model truncates or invents
-words), and a word is committed once no future window can reach it. `voting.py` has the details;
-`context.py` has the spacing and casing rules, which follow Android's keyboard (AOSP LatinIME) for
-sentence boundaries.
+The backend (`src/whistle_ime/`, Python) records with `pw-record` and cuts the recording into 5 s segments
+starting every 2.5 s. Every 0.1 s it transcribes the open segment, from its start to the newest audio, and
+shows that as the preview; a dictation under 5 s is just that, committed with one last pass when you stop.
+Whistle reads a window cleanly except near its cuts, so consecutive segments are stitched in the middle of
+their overlap, at a word both read alike (same word, overlapping in time), and each moment comes from the
+segment where it lies furthest from a cut; the older segment's words up to the stitch are then committed.
+`segments.py` has the details; `context.py` has the spacing and casing rules, which follow Android's
+keyboard (AOSP LatinIME) for sentence boundaries.
 
 Windows are 5 s because Whistle's encoder gets about 5x slower past 64 frames (5.12 s).
 
@@ -110,6 +116,7 @@ Protocol between addon and backend, one message per line, tab-separated:
 | `START <known> <before>` | begin; `<known>` is 1 if the app reports the text before the cursor, which follows (escaped) |
 | `STOP [<name> <mods> <text>]` | finish: final pass, commit the rest; if a key ended the dictation, its keysym name, modifiers and text, from which `finish.py` decides what to commit |
 | `CANCEL` | finish, dropping uncommitted text |
+| `CONTINUE <known> <before>` | after `NEXT`: go on dictating, with the context as in `START` |
 
 | backend to addon | |
 |---|---|
@@ -117,6 +124,7 @@ Protocol between addon and backend, one message per line, tab-separated:
 | `COMMIT <text>` | insert text; never revised |
 | `PREEDIT <settled> <tentative>` | the uncommitted rest, replacing the previous preedit |
 | `DONE <absorbed>` | session over; `<absorbed>` is 1 if the key that ended it was used up, else the front end types it after the commit |
+| `NEXT <absorbed>` | with `--continue-after-punctuation`: as `DONE`, but dictation goes on; the front end answers `CONTINUE` |
 | `ERROR <message>` | |
 
 ## Development

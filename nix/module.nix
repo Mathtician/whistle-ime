@@ -16,6 +16,7 @@ let
     [ (lib.getExe backend) ]
     ++ lib.optionals (cfg.language != null) [ "--language" cfg.language ]
     ++ lib.optionals (cfg.keywords != [ ]) [ "--keywords" (lib.concatStringsSep "," cfg.keywords) ]
+    ++ lib.optionals cfg.continueAfterPunctuation [ "--continue-after-punctuation" ]
   );
 in
 {
@@ -39,6 +40,15 @@ in
       default = [ ];
       example = [ "Siobhan" "Krzysztof Nowak" ];
       description = "Words and phrases to favour; they also keep their capital at the start of a dictation.";
+    };
+    continueAfterPunctuation = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Typing punctuation (, . ; : ! ?), Backspace or Ctrl+Backspace while dictating does what it does at the
+        end of a dictation (punctuation replaces the preview's own, Backspace deletes from it), commits, and
+        dictation goes on, so you can punctuate as you speak. Only the trigger key, Escape and other keys stop.
+      '';
     };
   };
 

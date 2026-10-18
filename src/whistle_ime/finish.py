@@ -28,6 +28,14 @@ class EndKey:
     mods: frozenset  # held modifiers among "shift", "ctrl", "alt", "super"
 
 
+def continues_dictation(key):
+    """Whether, with --continue-after-punctuation, the key ends only a piece of the dictation: it does what it
+    does at the end of any dictation (see finish), then dictation goes on."""
+    if key is None or key.mods & {"ctrl", "alt", "super"} - ({"ctrl"} if key.name == "BackSpace" else set()):
+        return False
+    return key.text in tuple(PUNCTUATION) or key.name == "BackSpace"
+
+
 def finish(preview, key):
     """(text to commit, whether the key is absorbed) for a dictation ended by `key` with `preview` uncommitted.
 

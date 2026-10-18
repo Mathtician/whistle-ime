@@ -15,12 +15,18 @@ Protocol, one message per line, fields separated by tabs (text never contains ta
                     key ended the dictation, its keysym name, comma-separated modifiers (shift,ctrl,alt,super) and
                     escaped text follow, and finish.py decides what to commit
     CANCEL          end the session, dropping whatever is not committed yet, DONE
+    CONTINUE <known> <before>
+                    after NEXT: go on dictating, with the text before the cursor now (as in START)
   backend -> addon
     READY                            the model is loaded (once, at startup)
     COMMIT <text>                    final text: insert it
     PREEDIT <settled> <tentative>    the uncommitted rest, shown after the committed text; replaces the last one
     DONE <absorbed>                  the session is over; <absorbed> is 1 if the key that ended it was used up
                                      (otherwise the front end replays it after the commit)
+    NEXT <absorbed>                  with --continue-after-punctuation, for STOP with a key that continues
+                                     dictation (punctuation, Backspace): this piece is over, as for DONE, but
+                                     the session goes on; the front end replays keys as for DONE, then answers
+                                     CONTINUE (or STOP/CANCEL, which end it with DONE)
     ERROR <message>
 STOP and CANCEL outside a session are ignored: the session may have just ended on an error.
 """
@@ -39,7 +45,7 @@ import numpy
 
 from whistle_ime import recordings, segments
 from whistle_ime.context import capitalize, fit_first_word, needs_space, starts_sentence, unescape
-from whistle_ime.finish import EndKey, finish
+from whistle_ime.finish import EndKey, continues_dictation, finish
 from whistle_ime.whistle import LANGUAGES, Whistle
 
 SAMPLE_RATE = 16000
@@ -212,9 +218,46 @@ def parse_end_key(fields):
     return EndKey(name, unescape(text), frozenset(m for m in mods.split(",") if m))
 
 
+def parse_context(fields):
+    """The text before the cursor from START's or CONTINUE's fields <known> <before>, None if unknown."""
+    assert len(fields) == 2 and fields[0] in ("0", "1"), fields
+    return unescape(fields[1]) if fields[0] == "1" else None
+
+
 def run_session(hear, before, commands, emit, recorder, interval=segments.INTERVAL_SECONDS, clock=time.monotonic,
-                keywords=()):
-    """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF)."""
+                keywords=(), continues=False):
+    """Run one session until STOP or CANCEL, then emit DONE. Returns False if commands ended (EOF).
+
+    With `continues`, a STOP whose key continues dictation (finish.continues: punctuation, Backspace) ends only
+    a piece of the session: the piece's text is committed and NEXT emitted, and the front end answers CONTINUE
+    with the context for the next piece. The microphone stays on, but the next piece hears only audio taken
+    after the STOP, so none of its windows reach back past the key.
+    """
+    try:
+        while True:
+            how = _piece(hear, before, commands, emit, recorder, interval, clock, keywords, continues)
+            if how != "next":
+                return how != "eof"
+            while True:
+                command = commands.get()
+                if command is None:
+                    return False
+                kind, *fields = command.split("\t")
+                if kind == "CONTINUE":
+                    before = parse_context(fields)
+                    break
+                if kind in ("STOP", "CANCEL"):
+                    recorder.stop()
+                    emit("DONE", "0")
+                    return True
+                emit("ERROR", f"unexpected {command!r} between pieces of a session")
+    finally:
+        recorder.stop()
+
+
+def _piece(hear, before, commands, emit, recorder, interval, clock, keywords, continues):
+    """One piece of a session, until STOP or CANCEL. It ends with DONE, or NEXT if a continuing key ended it.
+    Returns "next", "done" or "eof" (commands ended)."""
     saving = recordings.start(before)  # None unless the user switched session saving on
     if saving is not None:
         emit = saving.wrap_emit(emit)
@@ -227,8 +270,7 @@ def run_session(hear, before, commands, emit, recorder, interval=segments.INTERV
 
     session = Session(hear, before, emit, keywords, on_pass=saving.add_pass if saving is not None else None)
     next_tick = clock() + interval
-    keep_serving = True
-    absorbed = False
+    how, absorbed = "done", False
     try:
         while True:
             try:
@@ -242,14 +284,17 @@ def run_session(hear, before, commands, emit, recorder, interval=segments.INTERV
                 session.tick()
                 next_tick = max(next_tick + interval, clock())  # fell behind: skip ticks rather than burst
             elif command is None:
-                keep_serving = False
+                how = "eof"
                 break
             elif command.split("\t")[0] == "STOP":
                 end_key = parse_end_key(command.split("\t")[1:])
                 if saving is not None:
                     saving.stop = command.split("\t")[1:]
-                recorder.stop()
-                session.append(take())
+                if continues and continues_dictation(end_key):
+                    how = "next"
+                else:
+                    recorder.stop()
+                session.append(take())  # everything up to the key; what follows belongs to the next piece
                 absorbed = session.close(end_key)
                 break
             elif command == "CANCEL":
@@ -259,33 +304,35 @@ def run_session(hear, before, commands, emit, recorder, interval=segments.INTERV
     except Exception as error:  # noqa: BLE001 - report it to the addon rather than dying with the model loaded
         traceback.print_exc()
         emit("ERROR", f"{type(error).__name__}: {error}".replace("\t", " ").replace("\n", " "))
-    finally:
+        how = "done"
+    if how == "next":
+        emit("NEXT", "1" if absorbed else "0")
+    else:
         recorder.stop()
-    emit("DONE", "1" if absorbed else "0")
+        emit("DONE", "1" if absorbed else "0")
     if saving is not None:
         try:
             saving.save()
         except OSError:
             traceback.print_exc()  # a full disk must not break dictation
-    return keep_serving
+    return how
 
 
 def serve(hear, commands, emit, record=PwRecorder, interval=segments.INTERVAL_SECONDS, clock=time.monotonic,
-          keywords=()):
+          keywords=(), continues=False):
     """Answer sessions until commands end. commands yields lines without newlines, then None."""
     emit("READY")
     while (command := commands.get()) is not None:
         kind, *fields = command.split("\t")
         if kind == "START":
-            assert len(fields) == 2 and fields[0] in ("0", "1"), command
-            before = unescape(fields[1]) if fields[0] == "1" else None
+            before = parse_context(fields)
             try:
                 recorder = record()
             except OSError as error:
                 emit("ERROR", f"cannot record: {error}")
                 emit("DONE", "0")
                 continue
-            if not run_session(hear, before, commands, emit, recorder, interval, clock, keywords):
+            if not run_session(hear, before, commands, emit, recorder, interval, clock, keywords, continues):
                 return
         elif kind not in ("STOP", "CANCEL"):  # a late STOP or CANCEL: the session already ended
             emit("ERROR", f"unexpected {command!r} outside a session")
@@ -302,6 +349,8 @@ def main():
     parser.add_argument("--language", default=None, choices=LANGUAGES, help="Force the language (default: detect)")
     parser.add_argument("--keywords", default="", help="Words and phrases to favour, comma separated")
     parser.add_argument("--interval", type=float, default=segments.INTERVAL_SECONDS, help="Seconds between passes")
+    parser.add_argument("--continue-after-punctuation", action="store_true",
+                        help="Typed punctuation and Backspace act as now, then dictation goes on (NEXT/CONTINUE)")
     args = parser.parse_args()
 
     # Only protocol messages may reach the addon: keep a private copy of stdout for them and send everything
@@ -321,7 +370,7 @@ def main():
 
     commands = queue.Queue()
     threading.Thread(target=_stdin_lines, args=(commands,), daemon=True).start()
-    serve(hear, commands, emit, interval=args.interval, keywords=keywords)
+    serve(hear, commands, emit, interval=args.interval, keywords=keywords, continues=args.continue_after_punctuation)
 
 
 if __name__ == "__main__":

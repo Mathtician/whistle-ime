@@ -47,3 +47,17 @@ def test_other_keys_leave_the_preview_alone_and_are_replayed(end):
 def test_with_nothing_left_to_commit_every_key_is_replayed():
     assert finish("", key("BackSpace")) == ("", False)
     assert finish("", key("comma", ",")) == ("", False)
+
+
+def test_punctuation_and_backspace_continue_dictation_but_other_keys_and_chords_end_it():
+    from whistle_ime.finish import continues_dictation
+
+    def key(name, text="", *mods):
+        return EndKey(name, text, frozenset(mods))
+
+    assert all(continues_dictation(key(n, t)) for n, t in [("comma", ","), ("period", "."), ("question", "?")])
+    assert continues_dictation(key("exclam", "!", "shift"))  # Shift is how ! is typed
+    assert continues_dictation(key("BackSpace")) and continues_dictation(key("BackSpace", "", "ctrl"))
+    assert not continues_dictation(key("a", "a")) and not continues_dictation(key("Return"))
+    assert not continues_dictation(key("comma", ",", "ctrl")) and not continues_dictation(key("BackSpace", "", "alt"))
+    assert not continues_dictation(None)

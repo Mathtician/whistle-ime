@@ -14,6 +14,8 @@
  *                            key, and the backend decides from it what to commit (finish.py); a key it
  *                            did not absorb is replayed after the final commit, so it lands after the
  *                            dictated text
+ *   Finishing -> Recording   NEXT: the key continues dictation (backend --continue-after-punctuation); held
+ *                            keys are replayed as at DONE, then CONTINUE carries the context onward
  *   Recording/Finishing -> Cancelling
  *                            focus left the field (CANCEL); its preedit is gone and it can no longer
  *                            receive commits, so everything until DONE is dropped
@@ -349,10 +351,15 @@ private:
         showStatus(findIc(), "Finishing…");
     }
 
-    // START's context fields: "1<TAB><text before the cursor>" if known, else "0<TAB>". The backend decides
-    // spacing and casing from it. In order: the app's report if it has text; else the shadow, if it still
-    // describes this field; else the app's empty report (the start of a field); else unknown.
-    std::string context(InputContext *ic) const {
+    // START's and CONTINUE's context fields: "1<TAB><text before the cursor>" if known, else "0<TAB>". The
+    // backend decides spacing and casing from it. In order: the app's report if it has text; else the shadow,
+    // if it still describes this field; else the app's empty report (the start of a field); else unknown.
+    // Right after our own commits (`ours`, for CONTINUE) the shadow comes first: it has them, while the app's
+    // report may not yet.
+    std::string context(InputContext *ic, bool ours = false) const {
+        if (ours && shadow_.tracks(ic->uuid()) && !shadow_.text().empty()) {
+            return "1\t" + escape(shadow_.text());
+        }
         const auto &surrounding = ic->surroundingText();
         const bool reported = ic->capabilityFlags().test(CapabilityFlag::SurroundingText) && surrounding.isValid();
         if (reported && !surrounding.text().empty()) {
@@ -448,6 +455,9 @@ private:
         } else if (kind == "DONE") {
             logContext(findIc(), "DONE");
             endSession(State::Idle, fields.size() > 1 && fields[1] == "1");
+        } else if (kind == "NEXT" && state_ == State::Finishing) {
+            logContext(findIc(), "NEXT");
+            continueSession(fields.size() > 1 && fields[1] == "1");
         } else {
             WHISTLE_INFO() << "unexpected backend line: " << line;
         }
@@ -497,6 +507,32 @@ private:
                 follow(ic, key);
             }
         }
+    }
+
+    // NEXT: the key that ended a piece continues dictation. Clear the preedit and replay held keys as at DONE
+    // (all but that key, if the backend absorbed it), then go on recording from the context as it is now.
+    void continueSession(bool absorbed) {
+        auto *ic = findIc();
+        if (!ic) {  // focus left without telling us: nowhere to continue into
+            state_ = State::Cancelling;
+            send("CANCEL");
+            return;
+        }
+        ic->inputPanel().setClientPreedit(Text());
+        ic->updatePreedit();
+        auto held = std::move(held_);
+        held_.clear();
+        if (absorbed && !held.empty()) {
+            held.erase(held.begin());
+        }
+        shadow_.touch(Shadow::Clock::now());  // the app is about to redraw after the commit
+        for (const auto &key : held) {
+            replay(ic, key);
+            follow(ic, key);
+        }
+        state_ = State::Recording;
+        send("CONTINUE\t" + context(ic, true));
+        showStatus(ic, "🎤 Dictating");
     }
 
     // Typed text goes back as a commit, which every frontend delivers; other keys (Backspace, Return,
