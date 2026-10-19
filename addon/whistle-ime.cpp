@@ -14,7 +14,7 @@
  *                            key, and the backend decides from it what to commit (finish.py); a key it
  *                            did not absorb is replayed after the final commit, so it lands after the
  *                            dictated text
- *   Finishing -> Recording   NEXT: the key continues dictation (backend --continue-after-punctuation); held
+ *   Finishing -> Recording   NEXT: the key continues dictation (backend --interleave); held
  *                            keys are replayed as at DONE, then CONTINUE carries the context onward
  *   Recording/Finishing -> Cancelling
  *                            focus left the field (CANCEL); its preedit is gone and it can no longer

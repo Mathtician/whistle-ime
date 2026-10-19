@@ -29,7 +29,7 @@ class EndKey:
 
 
 def continues_dictation(key):
-    """Whether, with --continue-after-punctuation, the key ends only a piece of the dictation: it does what it
+    """Whether, with --interleave, the key ends only a piece of the dictation: it does what it
     does at the end of any dictation (see finish), then dictation goes on."""
     if key is None or key.mods & {"ctrl", "alt", "super"} - ({"ctrl"} if key.name == "BackSpace" else set()):
         return False

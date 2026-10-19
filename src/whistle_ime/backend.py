@@ -23,7 +23,7 @@ Protocol, one message per line, fields separated by tabs (text never contains ta
     PREEDIT <settled> <tentative>    the uncommitted rest, shown after the committed text; replaces the last one
     DONE <absorbed>                  the session is over; <absorbed> is 1 if the key that ended it was used up
                                      (otherwise the front end replays it after the commit)
-    NEXT <absorbed>                  with --continue-after-punctuation, for STOP with a key that continues
+    NEXT <absorbed>                  with --interleave, for STOP with a key that continues
                                      dictation (punctuation, Backspace): this piece is over, as for DONE, but
                                      the session goes on; the front end replays keys as for DONE, then answers
                                      CONTINUE (or STOP/CANCEL, which end it with DONE)
@@ -364,8 +364,9 @@ def main():
     parser.add_argument("--language", default=None, choices=LANGUAGES, help="Force the language (default: detect)")
     parser.add_argument("--keywords", default="", help="Words and phrases to favour, comma separated")
     parser.add_argument("--interval", type=float, default=segments.INTERVAL_SECONDS, help="Seconds between passes")
-    parser.add_argument("--continue-after-punctuation", action="store_true",
-                        help="Typed punctuation and Backspace act as now, then dictation goes on (NEXT/CONTINUE)")
+    parser.add_argument("--interleave", action="store_true",
+                        help="Interleave typing and dictation: typed punctuation and Backspace act as at the end of "
+                             "a dictation, then dictation goes on (NEXT/CONTINUE)")
     args = parser.parse_args()
 
     # Only protocol messages may reach the addon: keep a private copy of stdout for them and send everything
@@ -385,7 +386,7 @@ def main():
 
     commands = queue.Queue()
     threading.Thread(target=_stdin_lines, args=(commands,), daemon=True).start()
-    serve(hear, commands, emit, interval=args.interval, keywords=keywords, continues=args.continue_after_punctuation)
+    serve(hear, commands, emit, interval=args.interval, keywords=keywords, continues=args.interleave)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ services.whistle-ime = {
   language = "en";            # en de fr es it nl pl, or null to detect
   keywords = [ "Siobhan" ];   # favoured words; they also keep their capital
   trigger = "Super+Alt+V";    # fcitx5's notation
-  continueAfterPunctuation = false;  # true: typed punctuation and Backspace don't stop dictation
+  interleave = false;         # true: typed punctuation and Backspace don't stop dictation
 };
 ```
 
@@ -78,8 +78,8 @@ Ctrl+Alt+D to Show Desktop.
   | Ctrl+Backspace | committed without its last word |
   | anything else | committed, then the key is typed after it |
 
-  With `continueAfterPunctuation`, punctuation, Backspace and Ctrl+Backspace do the same and dictation goes
-  on, so you can speak and punctuate as you go; what you say next is heard from the key on.
+  With `interleave`, punctuation, Backspace and Ctrl+Backspace do the same and dictation goes on, so you
+  can speak and punctuate as you go; what you say next is heard from 0.2 s after the last key.
 
 - **Focus leaving the field** discards whatever is still provisional; committed text stays.
 - Dictations under 5 s are committed when you stop; in longer ones, text becomes final 4 to 6 s after you
@@ -124,7 +124,7 @@ Protocol between addon and backend, one message per line, tab-separated:
 | `COMMIT <text>` | insert text; never revised |
 | `PREEDIT <settled> <tentative>` | the uncommitted rest, replacing the previous preedit |
 | `DONE <absorbed>` | session over; `<absorbed>` is 1 if the key that ended it was used up, else the front end types it after the commit |
-| `NEXT <absorbed>` | with `--continue-after-punctuation`: as `DONE`, but dictation goes on; the front end answers `CONTINUE` |
+| `NEXT <absorbed>` | with `--interleave`: as `DONE`, but dictation goes on; the front end answers `CONTINUE` |
 | `ERROR <message>` | |
 
 ## Development
