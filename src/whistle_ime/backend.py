@@ -96,18 +96,22 @@ class Session:
         return reading
 
     def _fill(self):
-        """Final readings of every open segment that has reached full length; each opens the next."""
+        """Final readings of every open segment that has reached full length; each opens the next. Returns
+        whether any did."""
+        filled = False
         while self.heard() - self.open_start >= segments.WINDOW:
+            filled = True
             self.transcript.full(self._read(self.open_start, self.open_start + segments.WINDOW))
             self.open_start += segments.STRIDE
             self.audio = self.audio[self.open_start - self.offset:]
             self.offset = self.open_start
+        return filled
 
     def tick(self):
-        """Read the open segment again, unless nothing new arrived."""
+        """Read the open segment again, unless nothing new arrived. When a segment fills, its final reading is
+        this tick's one pass: the preview is its words after the stitch, which reach the newest audio anyway."""
         if self.unheard:
-            self._fill()
-            if self.heard() > self.open_start:
+            if not self._fill() and self.heard() > self.open_start:
                 self.transcript.partial(self._read(self.open_start, self.heard()))
             self.unheard = False
         self.publish()

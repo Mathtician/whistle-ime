@@ -316,3 +316,20 @@ def test_cancel_after_next_ends_the_session():
     keep = backend.run_session(fake_model, None, Steps(30, "STOP\tperiod\t\t.", "CANCEL"), out, FakeRecorder(8.0),
                                clock=lambda: 0.0, continues=True)
     assert keep and [m for m in out.messages if m[0] in ("NEXT", "DONE")] == [("NEXT", "1"), ("DONE", "0")]
+
+
+def test_the_tick_that_fills_a_segment_reads_only_that_segment():
+    reads = []
+
+    def model(samples):
+        reads.append(len(samples) / 16000)
+        return fake_model(samples)
+
+    session = backend.Session(model, None, Out())
+    for i in range(50):  # 5.0 s in 0.1 s chunks of the recording clock: the 50th fills the first segment
+        session.append(numpy.arange(1600 * i, 1600 * (i + 1), dtype=numpy.float64) / 16000)
+        before = len(reads)
+        session.tick()
+    assert reads[-1] == 5.0 and len(reads) == before + 1  # its final reading, and no reading of the next
+    settled, tentative = session.transcript.preview()
+    assert [w.text for w in settled] and tentative == []

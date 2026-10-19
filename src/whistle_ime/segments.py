@@ -32,8 +32,9 @@ CUT_SECONDS = (WINDOW_SECONDS - STRIDE_SECONDS) / 2
 # What the model says over silence or background noise, alone and near the window's start, wherever that start
 # is. A reading of only one of these, that early, counts as hearing nothing. So a real "Thank you." still
 # shows after other words or later in a window, but not alone in the first seconds of a segment.
-SILENCE_PHRASES = {("thank", "you"), ("you",)}
-# In recorded silence and noise the phrase ended up to 1.2 s into the window when it was alone.
+SILENCE_PHRASES = {("thank", "you"), ("you",), ("bye",)}
+# In recorded silence and noise these ended up to 1.25 s into the window when alone ("Bye." always alone: 64
+# readings in 221 recorded pieces, 6 of which committed it).
 SILENCE_PHRASE_SECONDS = 1.3
 
 

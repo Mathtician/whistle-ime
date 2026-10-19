@@ -100,3 +100,12 @@ def test_read_places_words_in_the_recording():
     reading = read(lambda samples: [("Hi", 0.0, 0.5, 0.9)], numpy.zeros(16000, numpy.float32), 2 * 16000)
     assert reading == Reading(2.0, 3.0, (Word("Hi", 2.0, 2.5, 0.9),))
     assert segments.CUT_SECONDS == 1.25
+
+
+def test_a_lone_bye_early_in_a_window_counts_as_nothing():
+    def heard(ws):
+        return read(lambda samples: ws, numpy.zeros(4 * 16000, numpy.float32), 0).words
+
+    assert heard([("Bye.", 0.0, 0.5, 0.9)]) == ()
+    assert len(heard([("Bye.", 2.0, 2.5, 0.9)])) == 1
+    assert len(heard([("Good", 0.0, 0.3, 0.9), ("bye.", 0.3, 0.6, 0.9)])) == 2
