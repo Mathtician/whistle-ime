@@ -49,6 +49,9 @@ from whistle_ime.finish import EndKey, continues_dictation, finish
 from whistle_ime.whistle import LANGUAGES, Whistle
 
 SAMPLE_RATE = 16000
+# After CONTINUE, audio is ignored for this long before the next piece starts: the keys just typed are still
+# audible (a click, a release), and the model hears words in such noise ("Bye.").
+CONTINUE_DELAY_SECONDS = 0.2
 
 
 def _field(text):
@@ -234,12 +237,14 @@ def run_session(hear, before, commands, emit, recorder, interval=segments.INTERV
 
     With `continues`, a STOP whose key continues dictation (finish.continues: punctuation, Backspace) ends only
     a piece of the session: the piece's text is committed and NEXT emitted, and the front end answers CONTINUE
-    with the context for the next piece. The microphone stays on, but the next piece hears only audio taken
-    after the STOP, so none of its windows reach back past the key.
+    with the context for the next piece, once it has replayed the keys typed meanwhile. The microphone stays on,
+    but the next piece hears only audio from CONTINUE_DELAY_SECONDS after the CONTINUE, so none of its windows
+    reach back to a key.
     """
+    skip = 0  # samples to drop before a piece starts
     try:
         while True:
-            how = _piece(hear, before, commands, emit, recorder, interval, clock, keywords, continues)
+            how = _piece(hear, before, commands, emit, recorder, interval, clock, keywords, continues, skip)
             if how != "next":
                 return how != "eof"
             while True:
@@ -249,6 +254,8 @@ def run_session(hear, before, commands, emit, recorder, interval=segments.INTERV
                 kind, *fields = command.split("\t")
                 if kind == "CONTINUE":
                     before = parse_context(fields)
+                    recorder.take()  # everything heard while the piece was finished and keys were typed
+                    skip = round(CONTINUE_DELAY_SECONDS * SAMPLE_RATE)
                     break
                 if kind in ("STOP", "CANCEL"):
                     recorder.stop()
@@ -259,15 +266,19 @@ def run_session(hear, before, commands, emit, recorder, interval=segments.INTERV
         recorder.stop()
 
 
-def _piece(hear, before, commands, emit, recorder, interval, clock, keywords, continues):
-    """One piece of a session, until STOP or CANCEL. It ends with DONE, or NEXT if a continuing key ended it.
-    Returns "next", "done" or "eof" (commands ended)."""
+def _piece(hear, before, commands, emit, recorder, interval, clock, keywords, continues, skip=0):
+    """One piece of a session, until STOP or CANCEL, hearing the recorder's audio after its first `skip` samples.
+    It ends with DONE, or NEXT if a continuing key ended it. Returns "next", "done" or "eof" (commands ended)."""
     saving = recordings.start(before)  # None unless the user switched session saving on
     if saving is not None:
         emit = saving.wrap_emit(emit)
 
     def take():
+        nonlocal skip
         samples = recorder.take()
+        if skip:
+            dropped = min(skip, len(samples))
+            samples, skip = samples[dropped:], skip - dropped
         if saving is not None:
             saving.add_audio(samples)
         return samples

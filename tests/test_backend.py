@@ -300,9 +300,10 @@ def test_with_continuing_punctuation_a_typed_comma_commits_and_dictation_goes_on
     assert keep
     assert out.commits() == ["And so, my fellow Americans,", " ask not what your country can do for you."]
     assert [m for m in out.messages if m[0] in ("NEXT", "DONE")] == [("NEXT", "1"), ("DONE", "0")]
-    # 30 ticks and the take at STOP hand the first piece 3.1 s; the second piece's windows start there
+    # 30 ticks and the take at STOP hand the first piece 3.1 s (the fake microphone gives 0.1 s per take);
+    # CONTINUE drops what came meanwhile (3.1-3.2 s), then CONTINUE_DELAY_SECONDS (3.2-3.4 s)
     second = [start for start in heard if start > 0.0]
-    assert second and min(second) == pytest.approx(3.1, abs=1e-6)
+    assert second and min(second) == pytest.approx(3.4, abs=1e-6)
 
 
 def test_without_continuing_punctuation_a_typed_comma_ends_the_session():
