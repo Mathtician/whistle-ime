@@ -45,9 +45,17 @@ python3Packages.buildPythonApplication {
   dependencies = [ python3Packages.numpy ];
   nativeCheckInputs = [ python3Packages.pytestCheckHook ];
   makeWrapperArgs = [
-    "--set WHISTLE_IME_LIB ${engine}/lib/libneedle.so"
-    "--set WHISTLE_IME_WEIGHTS ${weights}"
-    "--prefix PATH : ${lib.makeBinPath [ pipewire ]}" # pw-record
+    # One word per element: with __structuredAttrs the list isn't word-split.
+    "--set"
+    "WHISTLE_IME_LIB"
+    "${engine}/lib/libneedle.so"
+    "--set"
+    "WHISTLE_IME_WEIGHTS"
+    "${weights}"
+    "--prefix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [ pipewire ]) # pw-record
   ];
   passthru = { inherit engine weights; };
   meta = {
